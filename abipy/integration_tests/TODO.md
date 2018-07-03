@@ -2,6 +2,8 @@ TODO list:
 
 ## High priority
 
+* Add ebands.method to fix the fermi level in semiconductors
+
 * Send PR to phononwebsite with phonon band structures for tutorials.
 
 * Use angdeg instead of rprimd in structure_to_abivars if hex or rhomboedral lattice 
@@ -21,19 +23,19 @@ TODO list:
 * Reorganize modules in flowtk to prepare future migration. Modules with gs_works, dfpt_works ...
   qadapter package ... (postponed to v0.4)
 
-* Reintegrate AbiPy with new abivars
+* DONE Reintegrate AbiPy with new abivars
 
 * Almost DONE: Add support for https://mybinder.readthedocs.io/en/latest/sample_repos.html#conda-environment-with-environment-yml
-
-* Rename EPH.nc (A2F.nc, ELI.nc)
 
 * DONE Add https://github.com/mcmtroffaes/sphinxcontrib-bibtex
 
 * DONE Add support for DVDV, DDB in plot_networkx (but graphviz is much better)
 
-* Positive gw_qprange in EPH
+* Check Positive gw_qprange in EPH
 
 * DONE Fix problem with get_edos if we don't have enough bands 
+
+* abicomp should accept tolsym args
 
 ## Medium priority
 
@@ -62,8 +64,6 @@ TODO list:
 
 * Scheduler should report info on exceptions (especially if at the end when on_all_ok is invoked)
 
-
-
 * Replace core.tensor with pymatgen tensor (postponed to v0.4)
 
 * Add nsppol, nspinor, nspden to HIST file (and other stuff?)
@@ -85,7 +85,7 @@ TODO list:
 
 * Had to increase fermie again to get correct gap in diamond treated if FD smearing
 
-* Create git repo for Abipy webisite to facilitate integration with binder + sphinx-gallery?
+* Create git repo for Abipy website to facilitate integration with binder + sphinx-gallery?
 
 ## Low priority
 
@@ -109,7 +109,7 @@ TODO list:
 
 * Fix issue with DOJO_REPORT and PAW XML files.
 
-* plot_networkx does not work with flows containing callbacks e.g. run_qptdm_flow
+* DONE plot_networkx does not work with flows containing callbacks e.g. run_qptdm_flow
   FIXED with graphviz
 
 * Check xsf_write_data and visualization of potentials.
@@ -179,6 +179,6 @@ TODO list:
 
 * Cleanup and refactoring in OpticTask
 
-* Replace SIGRES with new fileformat based on SIGEPH.
+* Replace SIGRES with new fileformat based on SIGEPH (long-term)
 
 * [eV] --> (ev) in title

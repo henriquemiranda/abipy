@@ -36,7 +36,6 @@ from abipy.abio.robots import Robot
 from abipy.abio.inputs import AbinitInput, MultiDataset, AnaddbInput, OpticInput
 from abipy.abio.abivars import AbinitInputFile
 from abipy.abio.outputs import AbinitLogFile, AbinitOutputFile, OutNcFile, AboRobot #, CubeFile
-#from abipy.tools.plotting import DirTreePlotter
 from abipy.tools.printing import print_dataframe
 from abipy.tools.notebooks import print_source
 from abipy.abio.factories import *
@@ -45,7 +44,7 @@ from abipy.electrons.ebands import (ElectronBands, ElectronBandsPlotter, Electro
 from abipy.electrons.gsr import GsrFile, GsrRobot
 from abipy.electrons.psps import PspsFile
 from abipy.electrons.ddk import DdkFile
-from abipy.electrons.gw import SigresFile, SigresPlotter, SigresRobot
+from abipy.electrons.gw import SigresFile, SigresRobot
 from abipy.electrons.bse import MdfFile, MdfRobot
 from abipy.electrons.scissors import ScissorsBuilder
 from abipy.electrons.scr import ScrFile
@@ -61,9 +60,10 @@ from abipy.dfpt.anaddbnc import AnaddbNcFile
 from abipy.dfpt.gruneisen import GrunsNcFile
 from abipy.dynamics.hist import HistFile, HistRobot
 from abipy.waves import WfkFile
-# TODO Change name. A2f?
-from abipy.eph.eph import EphFile, EphRobot
+from abipy.eph.a2f import A2fFile, A2fRobot
 from abipy.eph.sigeph import SigEPhFile, SigEPhRobot
+from abipy.wannier90 import WoutFile
+from abipy.electrons.lobster import Coxp, ICoxp, LobsterDos, LobsterInput, LobsterAnalyzer
 
 # Abinit Documentation.
 from abipy.abio.abivars_db import get_abinit_variables, abinit_help, docvar
@@ -91,6 +91,12 @@ ext2file = collections.OrderedDict([
     (".pspnc", Pseudo),
     (".fhi", Pseudo),
     ("JTH.xml", Pseudo),
+    (".wout", WoutFile),
+    # Lobster files.
+    ("COHPCAR.lobster", Coxp),
+    ("COOPCAR.lobster", Coxp),
+    ("ICOHPLIST.lobster", ICoxp),
+    ("DOSCAR.lobster", LobsterDos),
 ])
 
 # Abinit files require a special treatment.
@@ -117,7 +123,7 @@ abiext2ncfile = collections.OrderedDict([
     ("FOLD2BLOCH.nc", Fold2BlochNcfile),
     ("CUT3DDENPOT.nc", Cut3dDenPotNcFile),
     ("OPTIC.nc", OpticNcFile),
-    ("EPH.nc", EphFile),
+    ("A2F.nc", A2fFile),
     ("SIGEPH.nc", SigEPhFile),
 ])
 
@@ -143,7 +149,10 @@ def abifile_subclass_from_filename(filename):
     if os.path.basename(filename) == Flow.PICKLE_FNAME:
         return Flow
 
+    from abipy.tools.text import rreplace
     for ext, cls in ext2file.items():
+        # This to support gzipped files.
+        if filename.endswith(".gz"): filename = rreplace(filename, ".gz", "", occurrence=1)
         if filename.endswith(ext): return cls
 
     ext = filename.split("_")[-1]

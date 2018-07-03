@@ -3,6 +3,7 @@ from __future__ import division, print_function, unicode_literals, absolute_impo
 
 import json
 import os
+import warnings
 import numpy as np
 
 from pprint import pformat
@@ -12,9 +13,7 @@ from monty.termcolor import cprint
 from pymatgen.core.units import bohr_to_ang
 from abipy.core.structure import Structure, dataframes_from_structures
 from abipy.core.mixins import Has_Structure, TextFile, NotebookWriter
-
-import logging
-logger = logging.getLogger(__name__)
+from abipy.abio.abivar_database.variables import get_codevars
 
 __all__ = [
     "is_abivar",
@@ -23,40 +22,20 @@ __all__ = [
     "AbinitInputParser",
 ]
 
-_anaddb_varnames = None
-
-def _get_anaddb_varnames():
-    global _anaddb_varnames
-    if _anaddb_varnames is not None:
-        return _anaddb_varnames
-
-    from abipy import data as abidata
-    with open(abidata.var_file("anaddb_vars.json"), "rt") as fh:
-        _anaddb_varnames = set(json.load(fh))
-        return _anaddb_varnames
-
-
 def is_anaddb_var(varname):
     """True if varname is a valid Anaddb variable."""
-    return varname in _get_anaddb_varnames()
+    return varname in get_codevars()["anaddb"]
 
 
-ABI_VARNAMES = None
-
-def is_abivar(s):
+def is_abivar(varname):
     """True if s is an ABINIT variable."""
-    global ABI_VARNAMES
-    if ABI_VARNAMES is None:
-        from abipy import data as abidata
-        with open(abidata.var_file("abinit_vars.json"), "rt") as fh:
-            ABI_VARNAMES = set(json.load(fh))
-            # Add include statement
-            # FIXME: These variables should be added to the database.
-            ABI_VARNAMES.update(("include", "xyzfile"))
-
-    return s in ABI_VARNAMES
+    # Add include statement
+    # FIXME: These variables should be added to the database.
+    extra = ["include", "xyzfile"]
+    return varname in get_codevars()["abinit"] or varname in extra
 
 
+# TODO: Move to new directory
 ABI_OPERATORS = set(["sqrt", ])
 
 ABI_UNIT_NAMES = {
@@ -307,6 +286,11 @@ class AbinitInputFile(TextFile, Has_Structure, NotebookWriter):
 
         return "\n".join(lines)
 
+    @lazy_property
+    def has_multi_structures(self):
+        """True if input defines multiple structures."""
+        return self.structure is None
+
     def _repr_html_(self):
         """Integration with jupyter notebooks."""
         from abipy.abio.abivars_db import repr_html_from_abinit_string
@@ -332,11 +316,24 @@ class AbinitInputFile(TextFile, Has_Structure, NotebookWriter):
         """
         for dt in self.datasets[1:]:
             if dt.structure != self.datasets[0].structure:
-                logger.info("Datasets have different structures. Returning None. Use input.datasets[i].structure")
+                warnings.warn("Datasets have different structures. Returning None. Use input.datasets[i].structure")
                 return None
+
         return self.datasets[0].structure
 
     #def to_abinit_input(self):
+
+    def yield_figs(self, **kwargs):  # pragma: no cover
+        """
+        This function *generates* a predefined list of matplotlib figures with minimal input from the user.
+        """
+        if not self.has_multi_structures:
+            yield self.structure.plot(show=False)
+            yield self.structure.plot_bz(show=False)
+        else:
+            for dt in self.datasets:
+                yield dt.structure.plot(show=False)
+                yield dt.structure.plot_bz(show=False)
 
     def write_notebook(self, nbpath=None):
         """
@@ -350,8 +347,7 @@ class AbinitInputFile(TextFile, Has_Structure, NotebookWriter):
             nbv.new_code_cell("print(abinp)"),
         ])
 
-        has_multi_structures = self.structure is None
-        if has_multi_structures:
+        if self.has_multi_structures:
             nb.cells.extend([
                 nbv.new_code_cell("""\
 for dataset in inp.datasets:

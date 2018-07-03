@@ -34,6 +34,8 @@ from abipy.abio.input_tags import *
 from abipy.flowtk import PseudoTable, Pseudo, AbinitTask, AnaddbTask, ParalHintsParser, NetcdfReader
 from abipy.flowtk.abiinspect import yaml_read_irred_perts
 from abipy.flowtk import abiobjects as aobj
+from pymatgen.symmetry.bandstructure import HighSymmKpath
+from pymatgen.io.abinit.abiobjects import KSampling
 
 import logging
 logger = logging.getLogger(__file__)
@@ -139,7 +141,7 @@ class AbstractInput(six.with_metaclass(abc.ABCMeta, MutableMapping, object)):
         """
         Write the input file to file to ``filepath``.
         """
-        dirname = os.path.dirname(filepath)
+        dirname = os.path.dirname(os.path.abspath(filepath))
         if not os.path.exists(dirname): os.makedirs(dirname)
 
         # Write the input file.
@@ -609,7 +611,7 @@ class AbinitInput(six.with_metaclass(abc.ABCMeta, AbstractInput, MSONable, Has_S
 
             for name, value in items:
                 if mnemonics and value is not None:
-                    app("# <" + var_database[name].definition + ">")
+                    app("# <" + var_database[name].mnemonics + ">")
 
                 # Build variable, convert to string and append it
                 vname = name + post
@@ -620,7 +622,7 @@ class AbinitInput(six.with_metaclass(abc.ABCMeta, AbstractInput, MSONable, Has_S
             # Group variables by section.
             # Get dict mapping section_name --> list of variable names belonging to the section.
             keys = [k for (k, v) in self.items() if k not in exclude and v is not None]
-            sec2names = var_database.group_by_section(keys)
+            sec2names = var_database.group_by_varset(keys)
             w = 92
 
             for sec, names in sec2names.items():
@@ -630,7 +632,7 @@ class AbinitInput(six.with_metaclass(abc.ABCMeta, AbstractInput, MSONable, Has_S
                 for name in names:
                     value = self[name]
                     if mnemonics and value is not None:
-                        app(escape("# <" + var_database[name].definition + ">"))
+                        app(escape("# <" + var_database[name].mnemonics + ">"))
 
                     # Build variable, convert to string and append it
                     vname = name + post
@@ -644,7 +646,7 @@ class AbinitInput(six.with_metaclass(abc.ABCMeta, AbstractInput, MSONable, Has_S
                 app(w * "#")
                 for name, value in self.structure.to_abivars().items():
                     if mnemonics and value is not None:
-                        app(escape("# <" + var_database[name].definition + ">"))
+                        app(escape("# <" + var_database[name].mnemonics + ">"))
                     vname = name + post
                     if mode == "html": vname = var_database[name].html_link(label=vname)
                     app(str(InputVariable(vname, value)))
@@ -737,7 +739,7 @@ class AbinitInput(six.with_metaclass(abc.ABCMeta, AbstractInput, MSONable, Has_S
         Args:
             nqsmall: Number of k-points used to sample the smallest lattice vector.
             method: gaussian or tetra.
-            ph_qshift:
+            ph_qshift: Shift for the mesh.
         """
         # q-mesh for Fourier interpolatation of IFC and a2F(w)
         ph_ngqpt = self.structure.calc_ngkpt(nqsmall)
@@ -2184,6 +2186,22 @@ class MultiDataset(object):
         """Integration with jupyter_ notebooks."""
         return self.to_string(mode="html")
 
+    def get_vars_dataframe(self, *varnames):
+        """
+        Return pandas DataFrame with the value of the variables specified in `varnames`.
+
+        .. example:
+
+            df = multi.get_vars_dataframe("ecut", "ngkpt")
+        """
+        import pandas as pd
+        frames = []
+        for i, inp in enumerate(self):
+            df = pd.DataFrame([{v: inp.get(v, None) for v in varnames}],
+                              index=["dataset %d" % i], columns=varnames)
+            frames.append(df)
+        return pd.concat(frames)
+
     def filter_by_tags(self, tags=None, exclude_tags=None):
         """
         Filters the input according to the tags
@@ -2276,15 +2294,17 @@ class AnaddbInput(AbstractInput, Has_Structure):
 
     Error = AnaddbInputError
 
-    def __init__(self, structure, comment="", anaddb_args=None, anaddb_kwargs=None):
+    def __init__(self, structure, comment="", anaddb_args=None, anaddb_kwargs=None, spell_check=True):
+
         """
         Args:
             structure: |Structure| object
             comment: Optional string with a comment that will be placed at the beginning of the file.
             anaddb_args: List of tuples (key, value) with Anaddb input variables (default: empty)
             anaddb_kwargs: Dictionary with Anaddb input variables (default: empty)
+            spell_check: False to disable spell checking for input variables.
         """
-        self._spell_check = True
+        self.set_spell_check(spell_check)
         self._structure = structure
         self.comment = comment
 
@@ -2326,7 +2346,7 @@ class AnaddbInput(AbstractInput, Has_Structure):
 
     @classmethod
     def modes_at_qpoint(cls, structure, qpoint, asr=2, chneut=1, dipdip=1, ifcflag=0, lo_to_splitting=False,
-                        directions=None, anaddb_args=None, anaddb_kwargs=None):
+                        directions=None, anaddb_args=None, anaddb_kwargs=None, spell_check=False):
         """
         Input file for the calculation of the phonon frequencies at a given q-point.
 
@@ -2339,6 +2359,7 @@ class AnaddbInput(AbstractInput, Has_Structure):
                 cartesian direction will be used
             anaddb_args: List of tuples (key, value) with Anaddb input variables (default: empty)
             anaddb_kwargs: Dictionary with Anaddb input variables (default: empty)
+            spell_check: False to disable spell checking for input variables.
         """
         new = cls(structure, comment="ANADB input for phonon frequencies at one q-point",
                   anaddb_args=anaddb_args, anaddb_kwargs=anaddb_kwargs)
@@ -2400,9 +2421,9 @@ class AnaddbInput(AbstractInput, Has_Structure):
         return new
 
     @classmethod
-    def phbands_and_dos(cls, structure, ngqpt, nqsmall, ndivsm=20, q1shft=(0, 0, 0),
+    def phbands_and_dos(cls, structure, ngqpt, nqsmall, qppa=None, ndivsm=20, line_density=None, q1shft=(0, 0, 0),
                         qptbounds=None, asr=2, chneut=0, dipdip=1, dos_method="tetra", lo_to_splitting=False,
-                        anaddb_args=None, anaddb_kwargs=None):
+                        anaddb_args=None, anaddb_kwargs=None, spell_check=False):
         """
         Build an anaddb input file for the computation of phonon bands and phonon DOS.
 
@@ -2411,6 +2432,10 @@ class AnaddbInput(AbstractInput, Has_Structure):
             ngqpt: Monkhorst-Pack divisions for the phonon Q-mesh (coarse one)
             nqsmall: Used to generate the (dense) mesh for the DOS.
                 It defines the number of q-points used to sample the smallest lattice vector.
+            qppa: Defines the homogeneous q-mesh used for the DOS in units of q-points per reciproval atom.
+                Overrides nqsmall.
+            line_density: Defines the a density of k-points per reciprocal atom to plot the phonon dispersion.
+                Overrides ndivsm.
             ndivsm: Used to generate a normalized path for the phonon bands.
                 If gives the number of divisions for the smallest segment of the path.
             q1shft: Shifts used for the coarse Q-mesh
@@ -2422,6 +2447,7 @@ class AnaddbInput(AbstractInput, Has_Structure):
             lo_to_splitting: if True calculation of the LO-TO splitting will be included
             anaddb_args: List of tuples (key, value) with Anaddb input variables (default: empty)
             anaddb_kwargs: Dictionary with Anaddb input variables (default: empty)
+            spell_check: False to disable spell checking for input variables.
         """
         dosdeltae, dossmear = None, None
 
@@ -2437,20 +2463,38 @@ class AnaddbInput(AbstractInput, Has_Structure):
             raise NotImplementedError("Wrong value for dos_method: %s" % str(dos_method))
 
         new = cls(structure, comment="ANADB input for phonon bands and DOS",
-                  anaddb_args=anaddb_args, anaddb_kwargs=anaddb_kwargs)
+                  anaddb_args=anaddb_args, anaddb_kwargs=anaddb_kwargs, spell_check=spell_check)
 
-        # Parameters for the dos.
-        new.set_autoqmesh(nqsmall)
-        new.set_vars(prtdos=prtdos, dosdeltae=dosdeltae, dossmear=dossmear)
+        # Parameters for the DOS
+        if qppa:
+            ng2qpt = KSampling.automatic_density(structure, kppa=qppa).kpts[0]
+            #set new variables
+            new.set_vars(ng2qpt=ng2qpt,prtdos=prtdos,dossmear=dossmear)
+        else:
+            new.set_autoqmesh(nqsmall)
+            new.set_vars(prtdos=prtdos, dosdeltae=dosdeltae, dossmear=dossmear)
+            if nqsmall == 0:
+                new["prtdos"] = 0
 
-        # Disable DOS computation.
-        if nqsmall == 0:
-            new["prtdos"] = 0
+        # Parameters for the BS
+        if line_density:
+            hs = HighSymmKpath(structure, symprec=1e-2)
+            qpts, labels_list = hs.get_kpoints(line_density=line_density, coords_are_cartesian=False)
+            # remove repeated q-points since those do
+            # interfere with _set_split_vals in the phonon plotter
+            qph1l = [qpts[0]]
+            for qpt in qpts[1:]:
+                if not np.array_equal(qpt,qph1l[-1]):
+                    qph1l.append(qpt)
+            #set new variables
+            new['qph1l'] = [q.tolist()+[1] for q in qph1l]
+            new['nph1l'] = len(qph1l)
+            qptbounds = structure.calc_kptbounds()
+        else:
+            new.set_qpath(ndivsm, qptbounds=qptbounds)
+            qptbounds = new['qpath']
 
-        new.set_qpath(ndivsm, qptbounds=qptbounds)
-        qptbounds = new['qpath']
         q1shft = np.reshape(q1shft, (-1, 3))
-
         new.set_vars(
             ifcflag=1,
             ngqpt=np.array(ngqpt),

@@ -105,7 +105,7 @@ class TestStructure(AbipyTest):
         same_znse = Structure.as_structure(tmp_path)
         assert same_znse == znse
 
-        for fmt in ["abivars", "cif", "POSCAR", "json", "xsf"]:
+        for fmt in ["abivars", "cif", "POSCAR", "json", "xsf", "qe"]:
             assert len(znse.convert(fmt=fmt)) > 0
 
         oxi_znse = znse.get_oxi_state_decorated()
@@ -127,8 +127,10 @@ class TestStructure(AbipyTest):
         if self.has_matplotlib():
             assert si.plot_bz(show=False)
             assert si.plot_bz(pmg_path=False, show=False)
-            assert si.plot_xrd(show=False)
             assert si.plot(show=False)
+            if sys.version[0:3] > '2.7':
+                # pmg broke py compatibility
+                assert si.plot_xrd(show=False)
 
         if self.has_mayavi():
             #assert si.vtkview(show=False)  # Disabled due to (core dumped) on travis

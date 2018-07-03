@@ -17,11 +17,9 @@ from pprint import pprint, pformat
 from warnings import warn
 from collections import OrderedDict
 from monty.collections import AttrDict, dict2namedtuple
-from monty.dev import deprecated
 from monty.functools import lazy_property
 from monty.string import is_string, marquee
 from monty.termcolor import cprint
-
 from pymatgen.core.sites import PeriodicSite
 from pymatgen.core.lattice import Lattice
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
@@ -833,10 +831,6 @@ class Structure(pymatgen.Structure, NotebookWriter):
 
         return "\n".join(outs)
 
-    @deprecated(message="spglib_summary method has been replaced by spget_summary. It will be removed in 0.4")
-    def spglib_summary(self, verbose=0):
-        return self.spget_summary(verbose=verbose)
-
     @property
     def abi_spacegroup(self):
         """
@@ -946,6 +940,20 @@ class Structure(pymatgen.Structure, NotebookWriter):
         """
         # Construct the stars.
         return [kpoint.compute_star(self.abi_spacegroup.fm_symmops) for kpoint in self.hsym_kpoints]
+
+    # TODO
+    #def get_star_kpoint(self, kpoint):
+
+    #    # Call spglib to get spacegroup if Abinit spacegroup is not available.
+    #    if self.abi_spacegroup is None:
+    #        self.spgset_abi_spacegroup(has_timerev=not options.no_time_reversal)
+
+    #    kpoint = Kpoint(options.kpoint, self.reciprocal_lattice)
+    #    kstar = kpoint.compute_star(self.abi_spacegroup, wrap_tows=True)
+    #    return kstar
+    #    #print("Found %s points in the star of %s\n" % (len(kstar), repr(kpoint)))
+    #    #for k in kstar:
+    #    #    print(4 * " ", repr(k))
 
     def get_sorted_structure_z(self):
         """Order the structure according to increasing Z of the elements"""
@@ -1086,11 +1094,6 @@ class Structure(pymatgen.Structure, NotebookWriter):
         else:
             return plot_brillouin_zone(self.reciprocal_lattice, ax=ax, labels=labels, show=False, **kwargs)
 
-    # To maintain backward compatibility.
-    @deprecated(message="show_bz has been replaced by plot_bz and it will be removed in 0.4")
-    def show_bz(self, **kwargs):
-        return self.plot_bz(**kwargs)
-
     @add_fig_kwargs
     def plot_xrd(self, wavelength="CuKa", symprec=0, debye_waller_factors=None,
                  two_theta_range=(0, 90), annotate_peaks=True, ax=None, **kwargs):
@@ -1122,8 +1125,16 @@ class Structure(pymatgen.Structure, NotebookWriter):
         ax, fig, plt = get_ax_fig_plt(ax=ax)
         from pymatgen.analysis.diffraction.xrd import XRDCalculator
         xrd = XRDCalculator(wavelength=wavelength, symprec=symprec, debye_waller_factors=debye_waller_factors)
-        xrd.get_xrd_plot(self, two_theta_range=two_theta_range, annotate_peaks=annotate_peaks, ax=ax)
+        xrd.get_plot(self, two_theta_range=two_theta_range, annotate_peaks=annotate_peaks, ax=ax)
+
         return fig
+
+    def yield_figs(self, **kwargs):  # pragma: no cover
+        """
+        This function *generates* a predefined list of matplotlib figures with minimal input from the user.
+        """
+        yield self.plot(show=False)
+        yield self.plot_bz(show=False)
 
     def export(self, filename, visu=None, verbose=1):
         """
@@ -1231,6 +1242,9 @@ class Structure(pymatgen.Structure, NotebookWriter):
         """
         if fmt == "abivars":
             return self.abi_string
+        elif fmt == "qe":
+            from pymatgen.io.pwscf import PWInput
+            return str(PWInput(self, pseudo={s: s + ".pseudo" for s in self.symbol_set}))
         else:
             return super(Structure, self).to(fmt=fmt, **kwargs)
 

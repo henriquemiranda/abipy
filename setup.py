@@ -5,7 +5,6 @@ from __future__ import print_function
 import sys
 import os
 import shutil
-import numpy as np
 
 from glob import glob
 from setuptools import find_packages, setup, Extension
@@ -16,7 +15,6 @@ if sys.version[0:3] < '2.7':
     sys.stderr.write("abipy requires Python version 2.7 or above. Exiting.")
     sys.exit(1)
 
-#cmdclass = {}
 ext_modules = []
 
 #-------------------------------------------------------------------------------
@@ -83,7 +81,6 @@ def find_package_data():
             "refs/*.nc",
             "refs/*.log",
             "refs/*.abo",
-            "variables/*",
         ],
         'abipy.data.refs' : [
             "al_eph/*",
@@ -101,7 +98,6 @@ def find_package_data():
             "sio2_screening/*",
             "znse_phonons/*",
         ],
-        'abipy.htc': ["*.json"],
         'abipy.gui.awx' : ['images/*'],
     }
 
@@ -152,8 +148,27 @@ def cleanup():
 
 # List of external packages we rely on.
 # Note setup install will download them from Pypi if they are not available.
-with open("requirements.txt", "rt") as fh:
-    install_requires = [s.strip() for s in fh]
+#with open("requirements.txt", "rt") as fh:
+#    install_requires = [s.strip() for s in fh]
+
+install_requires = [
+"six",
+"prettytable",
+"tabulate",
+"apscheduler==2.1.0",
+"pydispatcher>=2.0.5",
+"tqdm",
+"html2text",
+"pyyaml>=3.11",
+"pandas",
+"numpy",
+"scipy",
+"spglib",
+"pymatgen==2018.6.11",
+"netCDF4",
+"matplotlib",
+"seaborn",
+]
 
 with_wxpython = False
 if with_wxpython:
@@ -161,8 +176,6 @@ if with_wxpython:
         "wxmplot",
         "wxpython",
     ]
-
-#print("install_requires\n", install_requires)
 
 
 #---------------------------------------------------------------------------
@@ -176,6 +189,7 @@ setup_args = dict(
       version=version,
       description=description,
       long_description=long_description,
+      long_description_content_type="text/x-rst",
       author=author,
       author_email=author_email,
       maintainer=maintainer,
@@ -199,13 +213,17 @@ if __name__ == "__main__":
     setup(**setup_args)
 
     print("""
-Please read the following if you are about to use abipy for the first time:
+Please read the following if you are about to use AbiPy for the first time:
 
-[1]
-    abipy needs to know about the cluster/computer you are running on. This information
-    is provided via the manager.yml and scheduler.yml files. These files must be located
-    in ~/.abinit/abipy or in the working directory in which you execute the flow.
-    Examples are provided in abipy/data/managers
+Abipy needs to know about the cluster/computer you are running on. This information
+is provided via the manager.yml and scheduler.yml files.
+These files must be located in ~/.abinit/abipy or in the working directory in which you execute the flow.
+Examples are provided in abipy/data/managers.
+See also the HTML page:
+
+    http://abinit.github.io/abipy/workflows/manager_examples.html
+
+TIP: Use abicheck.py to validate the final configuration.
 
 Have fun!
 """)
