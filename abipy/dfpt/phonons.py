@@ -1903,13 +1903,15 @@ class PhbstFile(AbinitNcFile, Has_Structure, Has_PhononBands, NotebookWriter):
         return self._write_nb_nbpath(nb, nbpath)
 
 
-_THERMO_YLABELS = {  # [name][units] --> latex string
-    "internal_energy": {"eV": "$U(T)$ [eV/cell]", "Jmol": "$U(T)$ [J/mole]"},
-    "free_energy": {"eV": "$F(T) + ZPE$ [eV/cell]", "Jmol": "$F(T) + ZPE$ [J/mole]"},
-    "entropy": {"eV": "$S(T)$ [eV/cell]", "Jmol": "$S(T)$ [J/mole]"},
-    "cv": {"eV": "$C_V(T)$ [eV/cell]", "Jmol": "$C_V(T)$ [J/mole]"},
+_THERMO_YLABELS = {
+    "internal_energy": "$U(T)$",
+    "free_energy":     "$F(T) + ZPE$",
+    "entropy":         "$S(T)$",
+    "cv":              "$C_V(T)$",
 }
 
+_THERMO_UNITS = {"meV":  "[meV/cell]",  "eV": "[eV/cell]",
+                 "Jmol": "[J/mole]", "kJmol": "[kJ/mole]" }
 
 class PhononDos(Function1D):
     """
@@ -2183,11 +2185,74 @@ class PhononDos(Function1D):
             ax.set_title(qname)
             ax.grid(True)
             ax.set_xlabel("Temperature [K]")
-            ax.set_ylabel(_THERMO_YLABELS[qname][units])
+            ax.set_ylabel(" ".join(_THERMO_YLABELS[qname], _THERMO_UNITS[units]))
             #ax.legend(loc="best", fontsize=fontsize, shadow=True)
 
         fig.tight_layout()
         return fig
+  
+    @add_fig_kwargs
+    def plot_harmonic_thermo_ax(self,ax,tstart=5,tstop=300,num=50,units='eV',formula_units=1,
+                                quantities=None, **kwargs):
+        """
+        Plot thermodinamic properties from the phonon DOSes within the harmonic approximation
+        in the same ax.
+
+        Args:
+            ax: Matplotlib Axes instance where to make the plot
+            tstart: The starting value (in Kelvin) of the temperature mesh.
+            tstop: The end value (in Kelvin) of the mesh.
+            num: int, optional Number of samples to generate. Default is 50.
+            quantities: List of strings specifying the thermodinamic quantities to plot.
+                Possible values: ["internal_energy", "free_energy", "entropy", "c_v"].
+                None means all.
+            units: eV for energies in ev/unit_cell, Jmol for results in J/mole.
+            formula_units: the number of formula units per unit cell. If unspecified, the
+                thermodynamic quantities will be given on a per-unit-cell basis.
+
+        Returns: |matplotlib-Figure|
+        """
+ 
+        quantities = list_strings(quantities) if quantities is not None else \
+            ["internal_energy", "free_energy", "entropy", "cv"]
+        options = {'internal_energy':{'eV':  {'units_label':'eV',    'factor':1    },
+                                      'Jmol':{'units_label':'kJmol', 'factor':0.001}},
+                   'free_energy':    {'eV':  {'units_label':'eV',    'factor':1    },
+                                      'Jmol':{'units_label':'kJmol', 'factor':0.001}},
+                   'entropy':        {'eV':  {'units_label':'meV',   'factor':1000 },
+                                      'Jmol':{'units_label':'Jmol',  'factor':1    }},
+                   'cv':             {'eV':  {'units_label':'meV',   'factor':1000 },
+                                      'Jmol':{'units_label':'Jmol',  'factor':1    }}}
+
+        for qname in quantities:
+            # Compute thermodinamic quantity associated to qname.
+            f1d = getattr(self, "get_" + qname)(tstart=tstart, tstop=tstop, num=num)
+            ys = f1d.values
+            if formula_units != 1: ys /= formula_units
+            if units == "Jmol": ys = ys * abu.e_Cb * abu.Avogadro
+            units_label = options[qname][units]['units_label']
+            label = " ".join([_THERMO_YLABELS[qname],_THERMO_UNITS[units_label]])
+            ax.plot(f1d.mesh, ys*options[qname][units]['factor'], label=label)
+ 
+    def get_dos_thermo_model(self,modeltype,natoms,fit='s'):
+        """
+        Get an effective model for the thermodynamic quantities
+        
+        Args:
+            modeltype: Type of model can be 'debye', 'einstein', 'hybrid' 
+                       appended by the number of einstein freqs
+        """
+
+        #calculate Debye frequency
+        acoustic_debye = phdos.get_acoustic_debye_temp(natoms)
+        dm = DosThermoModel.debye_model(acoustic_debye,natoms)
+        
+        #calculate Einstein frequency
+        einstein = (self.zero_point_energy - dm.zero_point_energy)
+         
+        def error_function(ref_dos,this_dos):
+            return
+        #call scipyminimize stuff
 
     def to_pymatgen(self):
         """
@@ -2196,6 +2261,84 @@ class PhononDos(Function1D):
         factor = abu.phfactor_ev2units("thz")
 
         return PmgPhononDos(self.mesh*factor, self.values/factor)
+
+class DosThermoModel(PhononDos):
+    """
+    This object reproduces the DOS to model the thermodynamic quantities 
+    in terms of a small number of parameters that can be 
+    initialized from an ab initio calculation.
+    """
+    def __init__(self,mesh,debye_freq,debye_integral,
+                           einstein_freqs,einstein_integral,broad=0.001):
+        self.mesh = mesh
+        self.debye_freq = debye_freq
+        self.debye_integral = debye_integral
+        self.einstein_freqs = einstein_freqs
+        self.einstein_integral = einstein_integral
+        self.broad = broad
+
+    @lazy_property
+    def values(self):
+        values = np.zeros(self.mesh.shape)
+
+        #calculate dos with Einstein model
+        for we in einstein_freqs:
+            values += gaussian(w,we,self.broad)
+        values = values*self.einstein_integral/len(einstein_freqs)
+
+        #calculate dos with Debye model
+        if self.debye_freq:
+            wcut = debye_integral**(1./3)*debye_freq
+            values += 3*w**2/debye_freq**3*np.heaviside(-w+wcut,1)
+        return values
+
+    @lazy_property
+    def zero_point_energy(self): 
+        nfreqs = len(self.einstein_freqs)
+        zpe = 0
+        if self.debye_freq is not None:
+            zpe += 3./8*self.integral_debye**(4./3)*self.debye_freq
+        if self.einstein_freqs is not None:
+            zpe += sum([we for we in self.einstein_freqs])/nfreqs/2*self.integral_einstein
+        return zpe
+
+    @classmethod
+    def debye_model(cls,mesh,debye_freq,natoms):
+        """
+        get the density of states using a debye model
+        
+        Args:
+            mesh: the list of energies in which to model the density of states
+            debye_freq: the debye frequency
+            natoms: the intended value for the integral of the density of states
+        """
+        return cls(mesh,debye_freq,natoms*3,[],0)
+
+    @classmethod
+    def einstein_model(mesh,einstein_freqs,natoms,broad=0.001):
+        """
+        Get the density of states using an Einstein model
+        
+        Args:
+            mesh: the list of energies in which to model the density of states
+            einstein_freqs: a list of discrete frequencies for the Eintein model
+            natoms: the intended value for the integral of the density of states
+            broad: broadening of the gaussians
+        """
+        return cls(mesh,None,0,einstein_freqs,natoms*3)
+       
+    @classmethod
+    def hybrid_model(mesh,debye_freq,gaussians,natoms):
+        """
+        get an hybrid model for the density of states
+        
+        Args:
+            mesh: the list of energies in which to model the density of states
+            debye_freq: the debye frequency
+            gaussians: a list of tuples, each tuple represents a gaussian (energy, width)
+            integral: the intended value for the integral of the density of states
+        """
+        return cls(mesh,debye_freq,3,einstein_freq,(natoms-1)*3)
 
 
 class PhdosReader(ETSF_Reader):
@@ -3445,7 +3588,7 @@ class PhononDosPlotter(NotebookWriter):
             ax.set_title(qname, fontsize=fontsize)
             ax.grid(True)
             ax.set_xlabel("Temperature [K]")
-            ax.set_ylabel(_THERMO_YLABELS[qname][units])
+            ax.set_ylabel(" ".join(_THERMO_YLABELS[qname], _THERMO_UNITS[units]))
             ax.legend(loc="best", fontsize=fontsize, shadow=True)
 
         fig.tight_layout()
