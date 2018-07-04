@@ -2402,18 +2402,19 @@ class PhononDos(Function1D):
         dm = PhononDosThermoModel.hybrid_model(mesh,acoustic_debye_freq,
                                                einstein_freqs,natoms,broad=0.001)
         #calculate and store errors
-        abinitio_ref = {}
+        error_ref = {}
         error = error(einstein_freqs)
 
         def output(key,value):
             if verbose: print("%10s: %6.2lf"%(key,value))
-            abinitio_ref[key] = value
+            error_ref[key] = value
 
         output('S(T) ARE (%)', np.average(error)*100)
         output('S(T) MRE (%)', np.max(error)*100)
         output('Integral (%)', np.abs((natoms*3-dm.integral_value)/(natoms*3))*100)
-
-        dm.set_abinitio_ref(abinitio_ref)
+        
+        dm.set_error_ref(error_ref)
+        dm.set_abinitio_ref(self)
         return dm 
 
     def to_pymatgen(self):
@@ -2495,13 +2496,15 @@ class PhononDosThermoModel(PhononDos,Function1D):
     initialized from an ab initio calculation.
     """
     def __init__(self,mesh,debye_freq,debye_integral,
-                           einstein_freqs,einstein_integral,abinitio_ref=None,broad=0.001):
+                           einstein_freqs,einstein_integral,
+                           abinitio_ref=None,error_ref=None,broad=0.001):
         self.debye_freq = debye_freq
         self.debye_integral = debye_integral
         self.einstein_freqs = einstein_freqs
         self.einstein_integral = einstein_integral
         self.broad = broad
         self.abinitio_ref = abinitio_ref
+        self.error_ref = error_ref
         super(PhononDos, self).__init__(mesh,None)
 
     #this is needed as the integral instantiates the class again 
@@ -2545,13 +2548,19 @@ class PhononDosThermoModel(PhononDos,Function1D):
         return np.average(self.einstein_freqs)
 
     def set_abinitio_ref(self,abinitio_ref):
+        """Store the abinitio reference"""
         self.abinitio_ref = abinitio_ref
+
+    def set_error_ref(self,error_ref):
+        """Add dictionary of errors with respect to reference"""
+        self.error_ref = error_ref
 
     def as_dict(self):
         """
         Return a dictionary containing all the information about the model
         """
-        data = self.abinito.copy()
+        data = self.error_ref.copy()
+        data.update({'debye_freq':self.debye_freq, 'einstein_freqs':self.einstein_freqs})
         return data
 
     def get_einstein_split(self):
@@ -2612,8 +2621,8 @@ class PhononDosThermoModel(PhononDos,Function1D):
             for we in self.einstein_freqs:
                 app('%8.4lf meV'%(we*1000))
         app('integral: %8.4lf'%self.integral_value)
-        if self.abinitio_ref:
-            lines += ['%10s: %6.2lf'%(key,value) for key,value in self.abinitio_ref.items()]
+        if self.error_ref:
+            lines += ['%10s: %6.2lf'%(key,value) for key,value in self.error_ref.items()]
         return "\n".join(lines)
 
 class PhdosReader(ETSF_Reader):
