@@ -2371,7 +2371,7 @@ class PhononDos(Function1D):
 
         def error(einstein_freqs):
             """
-            Calculate difference between the model and ab initio calculation
+            Calculate S from the model and ab initio calculation
             """
             tstop = 300
             mesh = np.linspace(min(self.mesh),max(self.mesh)*mesh_ratio,len(self.mesh)*mesh_ratio)
@@ -2380,13 +2380,21 @@ class PhononDos(Function1D):
                                                    einstein_freqs,natoms,broad=0.001)
             s_ref = self.get_entropy(tstop=tstop,num=100)
             s = dm.get_entropy(tstop=tstop,num=100)
-            return np.abs((s_ref.values-s.values)/s_ref.values)
+            return s_ref.values,s.values
+
+        def abs_error(einstein_freqs):
+            y_ref,y = error(einstein_freqs)            
+            return np.abs(y_ref-y)
+
+        def rel_error(einstein_freqs):
+            y_ref,y = error(einstein_freqs)            
+            return np.abs((y_ref-y)/y_ref)
 
         #calculate splitting
         if 'split' in modeltype:
             from scipy import optimize
             split_freqs = lambda d: [einstein_freq*(1-d),einstein_freq*(1+d)]
-            error_split = lambda d: np.average(error(split_freqs(d)))
+            error_split = lambda d: np.average(rel_error(split_freqs(d)))
             bounds = [(0,1)]
             x0 = 0.01
             res = optimize.minimize(error_split,x0,
@@ -2403,16 +2411,20 @@ class PhononDos(Function1D):
                                                einstein_freqs,natoms,broad=0.001)
         #calculate and store errors
         error_ref = OrderedDict()
-        error = error(einstein_freqs)
+        rel_error = rel_error(einstein_freqs)
+        abs_error = abs_error(einstein_freqs)
 
         def output(key,value):
             if verbose: print("%10s: %6.2lf"%(key,value))
             error_ref[key] = value
 
-        output('S(T) ARE (%)', np.average(error)*100)
-        output('S(T) MRE (%)', np.max(error)*100)
+        output('S(T) ARE   (%)', np.average(rel_error)*100)
+        output('S(T) MRE   (%)', np.max(rel_error)*100)
+        output('S(T) ARE (meV)', np.average(abs_error)*1000)
+        output('S(T) MRE (meV)', np.max(abs_error)*1000)
+
         output('Integral (%)', np.abs((natoms*3-dm.integral_value)/(natoms*3))*100)
-        output('ZPE      (%)', np.abs((dm.zero_point_energy-self.zero_point_energy)/self.zero_point_energy))
+        output('ZPE      (%)', np.abs((dm.zero_point_energy-self.zero_point_energy)/self.zero_point_energy)*100)
  
         dm.set_error_ref(error_ref)
         dm.set_abinitio_ref(self)
