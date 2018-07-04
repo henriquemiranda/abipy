@@ -2413,18 +2413,21 @@ class PhononDos(Function1D):
         error_ref = OrderedDict()
         rel_error = rel_error(einstein_freqs)
         abs_error = abs_error(einstein_freqs)
+        s300_model    = dm.get_entropy(tstart=300,tstop=300,num=1).values[0]
+        s300_abinitio = self.get_entropy(tstart=300,tstop=300,num=1).values[0]
 
         def output(key,value):
-            if verbose: print("%10s: %6.2lf"%(key,value))
+            if verbose: print("%20s: %6.2lf"%(key,value))
             error_ref[key] = value
 
-        output('S(T) ARE   (%)', np.average(rel_error)*100)
-        output('S(T) MRE   (%)', np.max(rel_error)*100)
-        output('S(T) ARE (meV)', np.average(abs_error)*1000)
-        output('S(T) MRE (meV)', np.max(abs_error)*1000)
-
+        output('S(T) MARE (%)', np.average(rel_error)*100)
+        output('S(T) MxARE (%)', np.max(rel_error)*100)
+        output('S(T) MAE (meV)', np.average(abs_error)*1000)
+        output('S(T) MxAE (meV)', np.max(abs_error)*1000)
+        output('S(300K) ARE (%)', np.abs((s300_model-s300_abinitio)/s300_abinitio)*100)
+        output('S(300K) AE (meV)', np.abs(s300_model-s300_abinitio)*1000)
         output('Integral (%)', np.abs((natoms*3-dm.integral_value)/(natoms*3))*100)
-        output('ZPE      (%)', np.abs((dm.zero_point_energy-self.zero_point_energy)/self.zero_point_energy)*100)
+        output('ZPE (%)', np.abs((dm.zero_point_energy-self.zero_point_energy)/self.zero_point_energy)*100)
  
         dm.set_error_ref(error_ref)
         dm.set_abinitio_ref(self)
@@ -2644,7 +2647,7 @@ class PhononDosThermoModel(PhononDos,Function1D):
             app('Einstein split: %6.2lf'%self.get_einstein_split())
         app('integral: %8.4lf'%self.integral_value)
         if self.error_ref:
-            lines += ['%10s: %6.2lf'%(key,value) for key,value in self.error_ref.items()]
+            lines += ['%20s: %6.2lf'%(key,value) for key,value in self.error_ref.items()]
         return "\n".join(lines)
 
 class PhdosReader(ETSF_Reader):
