@@ -2412,7 +2412,8 @@ class PhononDos(Function1D):
         output('S(T) ARE (%)', np.average(error)*100)
         output('S(T) MRE (%)', np.max(error)*100)
         output('Integral (%)', np.abs((natoms*3-dm.integral_value)/(natoms*3))*100)
-        
+        output('ZPE      (%)', np.abs((dm.zero_point_energy-self.zero_point_energy)/self.zero_point_energy))
+ 
         dm.set_error_ref(error_ref)
         dm.set_abinitio_ref(self)
         return dm 
@@ -2560,9 +2561,14 @@ class PhononDosThermoModel(PhononDos,Function1D):
         Return a dictionary containing all the information about the model
         """
         data = self.error_ref.copy()
-        if freqs: data.update({'debye_freq':self.debye_freq, 'einstein_freqs':self.einstein_freqs})
+        if freqs: data.update({'debye_freq':self.debye_freq, 
+                               'einstein_freqs':self.einstein_freqs,
+                               'zero_point_energy':self.zero_point_energy})
         data.update({'debye_integral': self.debye_integral,
                      'einstein_integral': self.einstein_integral})
+        if len(self.einstein_freqs) == 2:
+            data.update({'einstein_split': self.get_einstein_split(),
+                         'einstein_freq': self.average_einstein_freq})
         return data
 
     def get_einstein_split(self):
