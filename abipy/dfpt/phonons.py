@@ -2338,7 +2338,7 @@ class PhononDos(Function1D):
             label = " ".join([extra_label,_THERMO_YLABELS[qname],_THERMO_UNITS[units_label]])
             ax.plot(f1d.mesh, ys*options[qname][units]['factor'], label=label, **kwargs)
  
-    def get_dos_thermo_model(self,modeltype,natoms,fit='s',verbose=False):
+    def get_dos_thermo_model(self,modeltype,natoms,fit='s',mesh_ratio=1.5,verbose=False):
         """
         Get an effective model for the thermodynamic quantities
         
@@ -2374,7 +2374,8 @@ class PhononDos(Function1D):
             Calculate difference between the model and ab initio calculation
             """
             tstop = 500
-            dm = PhononDosThermoModel.hybrid_model(self.mesh,
+            mesh = np.linspace(min(self.mesh),max(self.mesh)*mesh_ratio,len(self.mesh)*mesh_ratio)
+            dm = PhononDosThermoModel.hybrid_model(mesh,
                                                    acoustic_debye_freq,
                                                    einstein_freqs,natoms,broad=0.001)
             s_ref = self.get_entropy(tstop=tstop)
@@ -2397,12 +2398,22 @@ class PhononDos(Function1D):
         else:
             einstein_freqs = [einstein_freq] 
 
-        dm = PhononDosThermoModel.hybrid_model(self.mesh,acoustic_debye_freq,
+        mesh = np.linspace(min(self.mesh),max(self.mesh)*mesh_ratio,len(self.mesh)*mesh_ratio)
+        dm = PhononDosThermoModel.hybrid_model(mesh,acoustic_debye_freq,
                                                einstein_freqs,natoms,broad=0.001)
+        #calculate and store errors
+        abinitio_ref = {}
         error = error(einstein_freqs)
-        print('S(T) ARE: %6.2lf %%'%(np.average(error)*100))
-        print('S(T) MRE: %6.2lf %%'%(np.max(error)*100))
-        print('Integral: %6.2lf %%'%np.abs((natoms*3-dm.integral_value)/(natoms*3)))
+
+        def output(key,value):
+            if verbose: print("%10s: %6.2lf"%(key,value))
+            abinitio_ref[key] = value
+
+        output('S(T) ARE (%)', np.average(error)*100)
+        output('S(T) MRE (%)', np.max(error)*100)
+        output('Integral (%)', np.abs((natoms*3-dm.integral_value)/(natoms*3))*100)
+
+        dm.set_abinitio_ref(abinitio_ref)
         return dm 
 
     def to_pymatgen(self):
@@ -2484,12 +2495,13 @@ class PhononDosThermoModel(PhononDos,Function1D):
     initialized from an ab initio calculation.
     """
     def __init__(self,mesh,debye_freq,debye_integral,
-                           einstein_freqs,einstein_integral,broad=0.001):
+                           einstein_freqs,einstein_integral,abinitio_ref=None,broad=0.001):
         self.debye_freq = debye_freq
         self.debye_integral = debye_integral
         self.einstein_freqs = einstein_freqs
         self.einstein_integral = einstein_integral
         self.broad = broad
+        self.abinitio_ref = abinitio_ref
         super(PhononDos, self).__init__(mesh,None)
 
     #this is needed as the integral instantiates the class again 
@@ -2531,6 +2543,16 @@ class PhononDosThermoModel(PhononDos,Function1D):
     @lazy_property
     def average_einstein_freq(self):
         return np.average(self.einstein_freqs)
+
+    def set_abinitio_ref(self,abinitio_ref):
+        self.abinitio_ref = abinitio_ref
+
+    def as_dict(self):
+        """
+        Return a dictionary containing all the information about the model
+        """
+        data = self.abinito.copy()
+        return data
 
     def get_einstein_split(self):
         """
@@ -2590,6 +2612,8 @@ class PhononDosThermoModel(PhononDos,Function1D):
             for we in self.einstein_freqs:
                 app('%8.4lf meV'%(we*1000))
         app('integral: %8.4lf'%self.integral_value)
+        if self.abinitio_ref:
+            lines += ['%10s: %6.2lf'%(key,value) for key,value in self.abinitio_ref.items()]
         return "\n".join(lines)
 
 class PhdosReader(ETSF_Reader):
