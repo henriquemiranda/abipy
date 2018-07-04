@@ -2361,8 +2361,8 @@ class PhononDos(Function1D):
 
         #calculate Debye frequency
         #acoustic_debye_freq = self.get_acoustic_debye_temp(natoms)*abu.kb_eVK
-        acoustic_debye_freq = self.fit_debye_freq(debye_integral*0.99)
-        #acoustic_debye_freq = self.get_debye_freq(debye_integral*0.99)
+        #acoustic_debye_freq = self.fit_debye_freq(debye_integral*0.99)
+        acoustic_debye_freq = self.get_debye_freq(debye_integral*0.99)
         dm = PhononDosThermoModel.debye_model(self.mesh,acoustic_debye_freq,debye_integral)
         if "debye" in modeltype: return dm       
  
@@ -2373,13 +2373,13 @@ class PhononDos(Function1D):
             """
             Calculate difference between the model and ab initio calculation
             """
-            tstop = 500
+            tstop = 300
             mesh = np.linspace(min(self.mesh),max(self.mesh)*mesh_ratio,len(self.mesh)*mesh_ratio)
             dm = PhononDosThermoModel.hybrid_model(mesh,
                                                    acoustic_debye_freq,
                                                    einstein_freqs,natoms,broad=0.001)
-            s_ref = self.get_entropy(tstop=tstop)
-            s = dm.get_entropy(tstop=tstop)
+            s_ref = self.get_entropy(tstop=tstop,num=100)
+            s = dm.get_entropy(tstop=tstop,num=100)
             return np.abs((s_ref.values-s.values)/s_ref.values)
 
         #calculate splitting
@@ -2402,7 +2402,7 @@ class PhononDos(Function1D):
         dm = PhononDosThermoModel.hybrid_model(mesh,acoustic_debye_freq,
                                                einstein_freqs,natoms,broad=0.001)
         #calculate and store errors
-        error_ref = {}
+        error_ref = OrderedDict()
         error = error(einstein_freqs)
 
         def output(key,value):
@@ -2555,12 +2555,14 @@ class PhononDosThermoModel(PhononDos,Function1D):
         """Add dictionary of errors with respect to reference"""
         self.error_ref = error_ref
 
-    def as_dict(self):
+    def get_dict4pandas(self,freqs=True):
         """
         Return a dictionary containing all the information about the model
         """
         data = self.error_ref.copy()
-        data.update({'debye_freq':self.debye_freq, 'einstein_freqs':self.einstein_freqs})
+        if freqs: data.update({'debye_freq':self.debye_freq, 'einstein_freqs':self.einstein_freqs})
+        data.update({'debye_integral': self.debye_integral,
+                     'einstein_integral': self.einstein_integral})
         return data
 
     def get_einstein_split(self):
@@ -2571,7 +2573,7 @@ class PhononDosThermoModel(PhononDos,Function1D):
         avg = np.abs(wes-self.average_einstein_freq)
         if not all(np.isclose(avg,avg[0])):
             raise ValueError('The splitting is not the same', avg)
-        return avg[0] 
+        return avg[0]/self.average_einstein_freq
 
     @classmethod
     def debye_model(cls,mesh,debye_freq,debye_integral):
@@ -2620,6 +2622,8 @@ class PhononDosThermoModel(PhononDos,Function1D):
             app('Einstein freqs:')
             for we in self.einstein_freqs:
                 app('%8.4lf meV'%(we*1000))
+        if len(self.einstein_freqs) == 2:
+            app('Einstein split: %6.2lf'%self.get_einstein_split())
         app('integral: %8.4lf'%self.integral_value)
         if self.error_ref:
             lines += ['%10s: %6.2lf'%(key,value) for key,value in self.error_ref.items()]
