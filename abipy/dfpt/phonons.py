@@ -2327,6 +2327,7 @@ class PhononDos(Function1D):
                    'cv':             {'eV':  {'units_label':'meV',   'factor':1000 },
                                       'Jmol':{'units_label':'Jmol',  'factor':1    }}}
 
+        extra_label = kwargs.pop('label','')
         for qname in quantities:
             # Compute thermodinamic quantity associated to qname.
             f1d = getattr(self, "get_" + qname)(tstart=tstart, tstop=tstop, num=num)
@@ -2334,10 +2335,10 @@ class PhononDos(Function1D):
             if formula_units != 1: ys /= formula_units
             if units == "Jmol": ys = ys * abu.e_Cb * abu.Avogadro
             units_label = options[qname][units]['units_label']
-            label = " ".join([_THERMO_YLABELS[qname],_THERMO_UNITS[units_label]])
-            ax.plot(f1d.mesh, ys*options[qname][units]['factor'], label=label)
+            label = " ".join([extra_label,_THERMO_YLABELS[qname],_THERMO_UNITS[units_label]])
+            ax.plot(f1d.mesh, ys*options[qname][units]['factor'], label=label, **kwargs)
  
-    def get_dos_thermo_model(self,modeltype,natoms,fit='s'):
+    def get_dos_thermo_model(self,modeltype,natoms,fit='s',verbose=False):
         """
         Get an effective model for the thermodynamic quantities
         
@@ -2346,16 +2347,63 @@ class PhononDos(Function1D):
                        appended by the number of einstein freqs
         """
 
+        if "hybrid" in modeltype:
+            debye_integral = 3
+            einstein_integral = (natoms-1)*3
+        elif "debye" in modeltype:
+            debye_integral = natoms*3
+            einstein_integral = 0
+        elif "einstein" in modeltype:
+            debye_integral = 0
+            einstein_integral = natoms*3
+        else:
+            raise ValueError('modeltype %s not implemented'%modeltype)
+
         #calculate Debye frequency
-        acoustic_debye = phdos.get_acoustic_debye_temp(natoms)
-        dm = DosThermoModel.debye_model(acoustic_debye,natoms)
-        
+        #acoustic_debye_freq = self.get_acoustic_debye_temp(natoms)*abu.kb_eVK
+        acoustic_debye_freq = self.fit_debye_freq(debye_integral*0.99)
+        #acoustic_debye_freq = self.get_debye_freq(debye_integral*0.99)
+        dm = PhononDosThermoModel.debye_model(self.mesh,acoustic_debye_freq,debye_integral)
+        if "debye" in modeltype: return dm       
+ 
         #calculate Einstein frequency
-        einstein = (self.zero_point_energy - dm.zero_point_energy)
-         
-        def error_function(ref_dos,this_dos):
-            return
-        #call scipyminimize stuff
+        einstein_freq = (self.zero_point_energy - dm.zero_point_energy)*2/einstein_integral
+
+        def error(einstein_freqs):
+            """
+            Calculate difference between the model and ab initio calculation
+            """
+            tstop = 500
+            dm = PhononDosThermoModel.hybrid_model(self.mesh,
+                                                   acoustic_debye_freq,
+                                                   einstein_freqs,natoms,broad=0.001)
+            s_ref = self.get_entropy(tstop=tstop)
+            s = dm.get_entropy(tstop=tstop)
+            return np.abs((s_ref.values-s.values)/s_ref.values)
+
+        #calculate splitting
+        if 'split' in modeltype:
+            from scipy import optimize
+            split_freqs = lambda d: [einstein_freq*(1-d),einstein_freq*(1+d)]
+            error_split = lambda d: np.average(error(split_freqs(d)))
+            bounds = [(0,1)]
+            x0 = 0.01
+            res = optimize.minimize(error_split,x0,
+                                    method='L-BFGS-B',
+                                    bounds=bounds)
+            if verbose: print(res)
+            d = res.x[0]
+            einstein_freqs = split_freqs(d)
+        else:
+            einstein_freqs = [einstein_freq] 
+
+        dm = PhononDosThermoModel.hybrid_model(self.mesh,acoustic_debye_freq,
+                                               einstein_freqs,natoms,broad=0.001)
+        error = error(einstein_freqs)
+        print('S(T) ARE: %6.2lf %%'%(np.average(error)*100))
+        print('S(T) MRE: %6.2lf %%'%(np.max(error)*100))
+        print('Integral: %6.2lf %%'%np.abs((natoms*3-dm.integral_value)/(natoms*3)))
+        return dm 
 
     def to_pymatgen(self):
         """
@@ -2364,84 +2412,6 @@ class PhononDos(Function1D):
         factor = abu.phfactor_ev2units("thz")
 
         return PmgPhononDos(self.mesh*factor, self.values/factor)
-
-class DosThermoModel(PhononDos):
-    """
-    This object reproduces the DOS to model the thermodynamic quantities 
-    in terms of a small number of parameters that can be 
-    initialized from an ab initio calculation.
-    """
-    def __init__(self,mesh,debye_freq,debye_integral,
-                           einstein_freqs,einstein_integral,broad=0.001):
-        self.mesh = mesh
-        self.debye_freq = debye_freq
-        self.debye_integral = debye_integral
-        self.einstein_freqs = einstein_freqs
-        self.einstein_integral = einstein_integral
-        self.broad = broad
-
-    @lazy_property
-    def values(self):
-        values = np.zeros(self.mesh.shape)
-
-        #calculate dos with Einstein model
-        for we in einstein_freqs:
-            values += gaussian(w,we,self.broad)
-        values = values*self.einstein_integral/len(einstein_freqs)
-
-        #calculate dos with Debye model
-        if self.debye_freq:
-            wcut = debye_integral**(1./3)*debye_freq
-            values += 3*w**2/debye_freq**3*np.heaviside(-w+wcut,1)
-        return values
-
-    @lazy_property
-    def zero_point_energy(self): 
-        nfreqs = len(self.einstein_freqs)
-        zpe = 0
-        if self.debye_freq is not None:
-            zpe += 3./8*self.integral_debye**(4./3)*self.debye_freq
-        if self.einstein_freqs is not None:
-            zpe += sum([we for we in self.einstein_freqs])/nfreqs/2*self.integral_einstein
-        return zpe
-
-    @classmethod
-    def debye_model(cls,mesh,debye_freq,natoms):
-        """
-        get the density of states using a debye model
-        
-        Args:
-            mesh: the list of energies in which to model the density of states
-            debye_freq: the debye frequency
-            natoms: the intended value for the integral of the density of states
-        """
-        return cls(mesh,debye_freq,natoms*3,[],0)
-
-    @classmethod
-    def einstein_model(mesh,einstein_freqs,natoms,broad=0.001):
-        """
-        Get the density of states using an Einstein model
-        
-        Args:
-            mesh: the list of energies in which to model the density of states
-            einstein_freqs: a list of discrete frequencies for the Eintein model
-            natoms: the intended value for the integral of the density of states
-            broad: broadening of the gaussians
-        """
-        return cls(mesh,None,0,einstein_freqs,natoms*3)
-       
-    @classmethod
-    def hybrid_model(mesh,debye_freq,gaussians,natoms):
-        """
-        get an hybrid model for the density of states
-        
-        Args:
-            mesh: the list of energies in which to model the density of states
-            debye_freq: the debye frequency
-            gaussians: a list of tuples, each tuple represents a gaussian (energy, width)
-            integral: the intended value for the integral of the density of states
-        """
-        return cls(mesh,debye_freq,3,einstein_freq,(natoms-1)*3)
 
     @property
     def debye_temp(self):
@@ -2464,6 +2434,163 @@ class DosThermoModel(PhononDos):
 
         return self.debye_temp/nsites**(1/3)
 
+    def get_debye_freq(self,debye_integral):
+        """
+        get the freq at which the integral of the density of states is debye_integral
+        """
+        integral = self.integral()
+        wcut = np.interp(debye_integral,integral.values,integral.mesh)
+        return wcut/debye_integral**(1.0/3)
+
+    def fit_debye_freq(self,debye_integral):
+        """
+        Calculate a debye frequency by fitting the DOS
+        """ 
+        if debye_integral==0: return 0
+
+        #find the freq at which the integral of the density of states is debye_integral
+        integral = self.integral()
+        wcut = np.interp(debye_integral,integral.values,integral.mesh)
+
+        #fit debye model
+        from scipy.optimize import curve_fit
+        
+        def debye_dos(w, a):
+            return 3 * w**2 / a
+
+        min_index = self.find_mesh_index(0)
+        max_index = self.find_mesh_index(wcut)
+        popt, pcov = curve_fit(debye_dos,
+                               self.mesh[min_index:max_index],
+                               self.values[min_index:max_index])
+
+        a = popt[0]
+
+        if 0:
+            w = self.mesh[min_index:max_index]
+            import matplotlib.pyplot as plt
+            plt.plot(w,self.values[min_index:max_index])
+            plt.plot(w,debye_dos(w,a))
+            plt.show()
+            exit()
+
+        debye_freq = a**(1.0/3)
+        return debye_freq
+
+class PhononDosThermoModel(PhononDos,Function1D):
+    """
+    This object reproduces the DOS to model the thermodynamic quantities 
+    in terms of a small number of parameters that can be 
+    initialized from an ab initio calculation.
+    """
+    def __init__(self,mesh,debye_freq,debye_integral,
+                           einstein_freqs,einstein_integral,broad=0.001):
+        self.debye_freq = debye_freq
+        self.debye_integral = debye_integral
+        self.einstein_freqs = einstein_freqs
+        self.einstein_integral = einstein_integral
+        self.broad = broad
+        super(PhononDos, self).__init__(mesh,None)
+
+    #this is needed as the integral instantiates the class again 
+    @lazy_property
+    def idos(self):
+        return Function1D(self.mesh,self.values).integral()
+
+    @lazy_property
+    def integral_value(self):
+        return self.idos[-1][1]
+
+    @lazy_property
+    def values(self):
+        w = self.mesh
+        values = np.zeros(w.shape)
+
+        #calculate dos with Einstein model
+        if len(self.einstein_freqs):
+            for we in self.einstein_freqs:
+                values += gaussian(w,self.broad,we)
+            values = values*self.einstein_integral/len(self.einstein_freqs)
+
+        #calculate dos with Debye model
+        if self.debye_freq:
+            wcut = self.debye_integral**(1./3)*self.debye_freq
+            values += 3*w**2/self.debye_freq**3*np.heaviside(-w+wcut,1)*np.heaviside(w,1)
+        return values
+
+    @lazy_property
+    def zero_point_energy(self): 
+        nfreqs = len(self.einstein_freqs)
+        zpe = 0
+        if self.debye_freq is not None:
+            zpe += 3./8*self.debye_integral**(4./3)*self.debye_freq
+        if self.einstein_freqs is not None and self.einstein_integral != 0:
+            zpe += sum([we for we in self.einstein_freqs])/nfreqs/2*self.einstein_integral
+        return zpe
+
+    @lazy_property
+    def average_einstein_freq(self):
+        return np.average(self.einstein_freqs)
+
+    def get_einstein_split(self):
+        """
+        When we have only two Einstein frequencies calculate the splitting
+        """
+        wes = np.array(self.einstein_freqs)
+        avg = np.abs(wes-self.average_einstein_freq)
+        if not all(np.isclose(avg,avg[0])):
+            raise ValueError('The splitting is not the same', avg)
+        return avg[0] 
+
+    @classmethod
+    def debye_model(cls,mesh,debye_freq,debye_integral):
+        """
+        get the density of states using a debye model
+        
+        Args:
+            mesh: the list of energies in which to model the density of states
+            debye_freq: the debye frequency
+            natoms: the intended value for the integral of the density of states
+        """
+        return cls(mesh,debye_freq,debye_integral,[],0)
+
+    @classmethod
+    def einstein_model(cls,mesh,einstein_freqs,einstein_integral,broad=0.001):
+        """
+        Get the density of states using an Einstein model
+        
+        Args:
+            mesh: the list of energies in which to model the density of states
+            einstein_freqs: a list of discrete frequencies for the Eintein model
+            natoms: the intended value for the integral of the density of states
+            broad: broadening of the gaussians
+        """
+        return cls(mesh,None,0,einstein_freqs,einstein_integral)
+       
+    @classmethod
+    def hybrid_model(cls,mesh,debye_freq,einstein_freqs,natoms,broad=0.001):
+        """
+        get an hybrid model for the density of states
+        
+        Args:
+            mesh: the list of energies in which to model the density of states
+            debye_freq: the debye frequency
+            gaussians: a list of tuples, each tuple represents a gaussian (energy, width)
+            integral: the intended value for the integral of the density of states
+        """
+        return cls(mesh,debye_freq,3,einstein_freqs,(natoms-1)*3,broad=broad)
+
+    def __str__(self):
+        lines = []; app = lines.append
+        app(marquee(self.__class__.__name__, mark="="))
+        app('Debye freq:')
+        app('%8.4lf meV'%(self.debye_freq*1000))
+        if len(self.einstein_freqs):
+            app('Einstein freqs:')
+            for we in self.einstein_freqs:
+                app('%8.4lf meV'%(we*1000))
+        app('integral: %8.4lf'%self.integral_value)
+        return "\n".join(lines)
 
 class PhdosReader(ETSF_Reader):
     """

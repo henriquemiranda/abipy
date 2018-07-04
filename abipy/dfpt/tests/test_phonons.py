@@ -394,6 +394,16 @@ class PhononDosTest(AbipyTest):
 
         ncfile.close()
 
+class PhononDosThermoModelTest(AbipyTest):
+    """Testing PhononDosThermoModel"""
+    def test_from_phdosfile(self):
+        ncfile = PhdosFile(abidata.ref_file("trf2_5.out_PHDOS.nc"))
+        natoms = len(ncfile.structure)
+
+        dtm = ncfile.phdos.get_dos_thermo_model('debye',max(ncfile.phdos.mesh),natoms)
+        dtm = ncfile.phdos.get_dos_thermo_model('einstein',max(ncfile.phdos.mesh),natoms)
+        dtm = ncfile.phdos.get_dos_thermo_model('hybrid',max(ncfile.phdos.mesh),natoms)
+        dtm = ncfile.phdos.get_dos_thermo_model('hybrid:split',max(ncfile.phdos.mesh),natoms)
 
 class PhononDosPlotterTest(AbipyTest):
 
