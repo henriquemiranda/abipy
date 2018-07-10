@@ -2369,7 +2369,7 @@ class PhononDos(Function1D):
         #calculate Einstein frequency
         einstein_freq = (self.zero_point_energy - dm.zero_point_energy)*2/einstein_integral
 
-        def error(einstein_freqs):
+        def error(einstein_freqs,broad=0.001):
             """
             Calculate S from the model and ab initio calculation
             """
@@ -2377,17 +2377,17 @@ class PhononDos(Function1D):
             mesh = np.linspace(min(self.mesh),max(self.mesh)*mesh_ratio,len(self.mesh)*mesh_ratio)
             dm = PhononDosThermoModel.hybrid_model(acoustic_debye_freq,
                                                    einstein_freqs,natoms,
-                                                   mesh=self.mesh,broad=0.001)
+                                                   mesh=self.mesh,broad=broad)
             s_ref = self.get_entropy(tstop=tstop,num=100)
             s = dm.get_entropy(tstop=tstop,num=100)
             return s_ref.values,s.values
 
-        def abs_error(einstein_freqs):
-            y_ref,y = error(einstein_freqs)            
+        def abs_error(einstein_freqs,broad=0.001):
+            y_ref,y = error(einstein_freqs,broad=broad)
             return np.abs(y_ref-y)
 
-        def rel_error(einstein_freqs):
-            y_ref,y = error(einstein_freqs)            
+        def rel_error(einstein_freqs,broad=0.001):
+            y_ref,y = error(einstein_freqs,broad=broad)
             return np.abs((y_ref-y)/y_ref)
 
         #calculate splitting
@@ -2403,13 +2403,26 @@ class PhononDos(Function1D):
             if verbose: print(res)
             d = res.x[0]
             einstein_freqs = split_freqs(d)
+            broad = 0.001
+        elif 'broad' in modeltype:
+            from scipy import optimize
+            error_broad = lambda d: np.average(rel_error([einstein_freq],broad=d))
+            bounds = [(0,0.1)]
+            x0 = 0.001
+            res = optimize.minimize(error_broad,x0,
+                                    method='L-BFGS-B',
+                                    bounds=bounds)
+            if verbose: print(res)
+            einstein_freqs = [einstein_freq]
+            broad = res.x[0]
         else:
             einstein_freqs = [einstein_freq] 
+            broad = 0.001
 
         mesh = np.linspace(min(self.mesh),max(self.mesh)*mesh_ratio,len(self.mesh)*mesh_ratio)
         dm = PhononDosThermoModel.hybrid_model(acoustic_debye_freq,
                                                einstein_freqs,natoms,
-                                               mesh=mesh,broad=0.001)
+                                               mesh=mesh,broad=broad)
         #calculate and store errors
         error_ref = OrderedDict()
         rel_error = rel_error(einstein_freqs)
