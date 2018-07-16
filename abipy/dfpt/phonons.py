@@ -2347,50 +2347,61 @@ class PhononDos(Function1D):
                        appended by the number of einstein freqs
         """
 
-        if "hybrid" in modeltype:
+        if modeltype.startswith("hybrid"):
             debye_integral = 3
             einstein_integral = (natoms-1)*3
-        elif "debye" in modeltype:
+        elif modeltype.startswith("debye"):
             debye_integral = natoms*3
             einstein_integral = 0
-        elif "einstein" in modeltype:
+        elif modeltype.startswith("einstein"):
             debye_integral = 0
             einstein_integral = natoms*3
         else:
             raise ValueError('modeltype %s not implemented'%modeltype)
 
         #calculate Debye frequency
-        #acoustic_debye_freq = self.get_acoustic_debye_temp(natoms)*abu.kb_eVK
-        #acoustic_debye_freq = self.fit_debye_freq(debye_integral*0.99)
-        acoustic_debye_freq = self.get_debye_freq(debye_integral*0.99)
-        dm = PhononDosThermoModel.debye_model(acoustic_debye_freq,debye_integral,mesh=self.mesh)
-        if "debye" in modeltype: return dm       
+        debye_freq = self.get_acoustic_debye_temp(natoms)*abu.kb_eVK
+        #debye_freq = self.fit_debye_freq(debye_integral*0.99)
+        #debye_freq = self.get_debye_freq(debye_integral*0.99)
+        dm = PhononDosThermoModel.debye_model(debye_freq,debye_integral,mesh=self.mesh)
+        if modeltype.startswith("debye"): return dm       
  
         #calculate Einstein frequency
         einstein_freq = (self.zero_point_energy - dm.zero_point_energy)*2/einstein_integral
 
-        def error(einstein_freqs,broad=0.001):
+        def error(einstein_freqs,debye_freq=debye_freq,broad=0.001):
             """
             Calculate S from the model and ab initio calculation
             """
             tstop = 300
             mesh = np.linspace(min(self.mesh),max(self.mesh)*mesh_ratio,len(self.mesh)*mesh_ratio)
-            dm = PhononDosThermoModel.hybrid_model(acoustic_debye_freq,
+            dm = PhononDosThermoModel.hybrid_model(debye_freq,
                                                    einstein_freqs,natoms,
                                                    mesh=self.mesh,broad=broad)
+            #entropy
             s_ref = self.get_entropy(tstop=tstop,num=100)
             s = dm.get_entropy(tstop=tstop,num=100)
             return s_ref.values,s.values
 
-        def abs_error(einstein_freqs,broad=0.001):
-            y_ref,y = error(einstein_freqs,broad=broad)
+            #integral of dos
+            #dos_ref = self.idos
+            #dos = np.interp(dos_ref.mesh,dm.idos.values,dm.idos.mesh)
+            #return dos_ref.values, dos
+
+        def abs_error(einstein_freqs,debye_freq=debye_freq,broad=0.001):
+            y_ref,y = error(einstein_freqs,debye_freq=debye_freq,broad=broad)
             return np.abs(y_ref-y)
 
-        def rel_error(einstein_freqs,broad=0.001):
-            y_ref,y = error(einstein_freqs,broad=broad)
+        def rel_error(einstein_freqs,debye_freq=debye_freq,broad=0.001):
+            y_ref,y = error(einstein_freqs,debye_freq=debye_freq,broad=broad)
             return np.abs((y_ref-y)/y_ref)
 
-        #calculate splitting
+        def stddev(debye_freq,einstein_freq):
+            """calculate standard deviation"""
+            wcut = debye_integral**(1./3)*debye_freq
+            variance = (self * (self.mesh-einstein_freq) ** 2).spline_integral(a=wcut)/self.spline_integral(a=wcut)
+            return np.sqrt(variance)
+
         if 'split' in modeltype:
             from scipy import optimize
             split_freqs = lambda d: [einstein_freq*(1-d),einstein_freq*(1+d)]
@@ -2404,7 +2415,30 @@ class PhononDos(Function1D):
             d = res.x[0]
             einstein_freqs = split_freqs(d)
             broad = 0.001
-        elif 'broad' in modeltype:
+        elif 'fitdebye' in modeltype:
+            from scipy import optimize
+
+            def error_debye(debye_freq):
+                #calculate Einstein frequency
+                dm = PhononDosThermoModel.debye_model(debye_freq,debye_integral,mesh=self.mesh)
+                einstein_freq = (self.zero_point_energy - dm.zero_point_energy)*2/einstein_integral
+                #calculate standard deviation
+                broad = stddev(debye_freq,einstein_freq) 
+                return np.average(rel_error([einstein_freq],debye_freq=debye_freq,broad=broad))
+
+            bounds = [(0,debye_freq*2)]
+            x0 = debye_freq
+            res = optimize.minimize(error_debye,x0,
+                                    method='L-BFGS-B',
+                                    bounds=bounds)
+            if verbose: print(res)
+            debye_freq = res.x[0]
+            dm = PhononDosThermoModel.debye_model(debye_freq,debye_integral,mesh=self.mesh)
+            einstein_freq = (self.zero_point_energy - dm.zero_point_energy)*2/einstein_integral
+            einstein_freqs = [einstein_freq]
+            broad = stddev(debye_freq,einstein_freq)
+
+        elif 'fitbroad' in modeltype:
             from scipy import optimize
             error_broad = lambda d: np.average(rel_error([einstein_freq],broad=d))
             bounds = [(0,0.1)]
@@ -2415,12 +2449,15 @@ class PhononDos(Function1D):
             if verbose: print(res)
             einstein_freqs = [einstein_freq]
             broad = res.x[0]
+        elif 'calcbroad' in modeltype:
+            broad = stddev(debye_freq,einstein_freq)
+            einstein_freqs = [einstein_freq]
         else:
             einstein_freqs = [einstein_freq] 
             broad = 0.001
 
         mesh = np.linspace(min(self.mesh),max(self.mesh)*mesh_ratio,len(self.mesh)*mesh_ratio)
-        dm = PhononDosThermoModel.hybrid_model(acoustic_debye_freq,
+        dm = PhononDosThermoModel.hybrid_model(debye_freq,
                                                einstein_freqs,natoms,
                                                mesh=mesh,broad=broad)
         #calculate and store errors
@@ -2595,7 +2632,7 @@ class PhononDosThermoModel(PhononDos,Function1D):
         """
         data = self.error_ref.copy()
         data.update({'debye_freq':self.debye_freq, 
-                     'einstein_freqs':self.einstein_freqs,
+                     'n_einstein_freqs':len(self.einstein_freqs),
                      'zero_point_energy':self.zero_point_energy,
                      'natoms': self.natoms,
                      'debye_integral': self.debye_integral,
@@ -2603,16 +2640,26 @@ class PhononDosThermoModel(PhononDos,Function1D):
         if len(self.einstein_freqs) == 2:
             data.update({'einstein_split': self.get_einstein_split(),
                          'einstein_freq': self.average_einstein_freq})
+        for i,einstein_freq in enumerate(self.einstein_freqs):
+            data.update({'einstein_freq_%d'%i:einstein_freq}) 
         return data
 
-    def plot_dos_ax(self,ax,tstart=0,tstop=300):
+    def plot_einstein_freqs(self,ax,units='cm-1'):
+        """
+        Add vertical lines on the einstein frequencies
+        """
+        xfactor = abu.phfactor_ev2units(units)
+        for einstein_freq in self.einstein_freqs:
+            ax.axvline(einstein_freq*xfactor,c='C1')
+
+    def plot_dos_ax(self,ax,tstart=0,tstop=300,units='cm-1'):
         """
         Plot the density of states of the model and reference
         """
         ref = self.abinitio_ref
         if ref: 
-            ref.plot_dos_idos(ax,units='cm-1',label='ab initio')
-        self.plot_dos_idos(ax,units='cm-1',label='model')
+            ref.plot_dos_idos(ax,units=units,label='ab initio')
+        self.plot_dos_idos(ax,units=units,label='model')
         ax.set_xlabel('$\omega (cm^{-1})$')
 
     
