@@ -2709,7 +2709,7 @@ class PhononDosThermoModel(PhononDos,Function1D):
             broad: broadening of the gaussians
         """
         if mesh is None: mesh = np.linspace(-broad*5,max(einstein_freqs)+broad*5,num)
-        return cls(mesh,None,0,einstein_freqs,einstein_integral)
+        return cls(mesh,None,0,einstein_freqs,einstein_integral,broad=broad)
        
     @classmethod
     def hybrid_model(cls,debye_freq,einstein_freqs,natoms,broad=0.001,mesh=None,num=1000):
