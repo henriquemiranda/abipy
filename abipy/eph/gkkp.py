@@ -47,6 +47,9 @@ class GKKPReader():
             self.nbands = db.read_dimvalue('max_number_of_states')
             self.natoms = db.read_dimvalue('number_of_atoms')
             self.nsppol = int(db.read_dimvalue('product_mband_nsppol')/self.nbands)
+           
+            #read the lattice 
+            self.structure = db.read_structure()
 
         # read the perturbation
         basename = os.path.basename(filename)
@@ -98,7 +101,9 @@ class MultiGKKPReader():
     and provide a common interface to access the data.
     Currently works with GKKP files produced with eph_task 2
     """
-    def __init__(self,filenames_list):
+    def __init__(self,filenames_list,ddb_file):
+
+        self.ddb_file = ddb_file
         self.filenames_list = filenames_list
         self._qpt_ipert_dict = defaultdict(dict)
 
@@ -112,10 +117,40 @@ class MultiGKKPReader():
             ipert = gkkp.ipert
             self._qpt_ipert_dict[qpt][ipert] = filename
 
+            #store the structure
+            self.structure = gkkp.structure
+
         self.kpoints = gkkp.kpoints
         self.qpoints = list(self._qpt_ipert_dict.keys())
         self.nbands = gkkp.nbands
         self.natoms = gkkp.natoms
+        self.nmodes = self.natoms*3
+
+    def _get_phonons(self):
+        """Call anaddb to diagonalize the dynamical matrices in the DDB file"""
+        from abipy import abilab
+        ddb = abilab.abiopen(self.ddb_file)
+        phonon_modes = []
+        phonon_freqs = []
+        for qpoint in self.qpoints:
+            phbands = ddb.anaget_phmodes_at_qpoint(qpoint)
+            phonon_modes.append(phbands.phdispl_cart)
+            phonon_freqs.append(phbands.phfreqs)
+        phonon_freqs = np.vstack(phonon_freqs)
+        phonon_modes = np.vstack(phonon_modes)
+        return phonon_freqs, phonon_modes
+
+    @property
+    def phonon_modes(self):
+        if not hasattr(self,'_phonon_modes'):
+            self._phonon_freqs, self._phonon_modes = self._get_phonons()
+        return self._phonon_modes
+
+    @property
+    def phonon_freqs(self):
+        if not hasattr(self,'_phonon_freqs'):
+            self._phonon_freqs, self._phonon_modes = self._get_phonons()
+        return self._phonon_freqs
 
     @property
     def nkpoints(self):
@@ -133,19 +168,28 @@ class MultiGKKPReader():
 
     @classmethod
     def from_flow(cls,flow):
+        """Find all the GKKP files in this flow and a DDB file"""
         filenames_list = []
+        ddb_file = None
         for work in flow:
             for task in work:
                 filenames_list.extend(task.outdir.has_abiext("GKK",single_file=False))
-        return cls(filenames_list)
+                has_ddb_file = task.indir.has_abiext("DDB")
+                if has_ddb_file: ddb_file = has_ddb_file
+        if ddb_file is None: raise FileNotFoundError('DDB file not found in flow')
+        return cls(filenames_list,ddb_file)
 
     @classmethod
     def from_work(cls,flowdir):
-        """Find all GKKP files in this work"""
+        """Find all GKKP files in this work and a DDB file"""
         filenames_list = []
+        ddb_file = None
         for task in work:
             filenames_list.extend(task.outdir.has_abiext("GKK",single_file=False))
-        return cls(filenames_list)
+            has_ddb_file = task.indir.has_abiext("DDB")
+            if has_ddb_file: ddb_file = has_ddb_file
+        if ddb_file is None: raise FileNotFoundError('DDB file not found in flow')
+        return cls(filenames_list,ddb_file)
 
     def get_gkkp_fix_k(self,ispin,kpt,ib1,ib2,imu,cartesian=True):
         """
@@ -169,15 +213,35 @@ class MultiGKKPReader():
             gkkp_fix_q[ikpt] = self.get_one_gkkp(iqpt,ispin,ikpt,ib1,ib2,imu,cartesian=cartesian)
         return self.kpoints, gkkp_fix_q
 
+    @property
+    def tcartesian(self):
+        """ create tranformation matrix from reciprocal coordinates to cartesian """
+        if not hasattr(self,"_tcartesian"):
+            self._tcartesian = np.zeros([self.nmodes,self.nmodes])
+            for a in range(self.natoms):
+                self._tcartesian[a*3:(a+1)*3,a*3:(a+1)*3] = self.structure.reciprocal_lattice.matrix.T
+        return self._tcartesian
+
     def get_one_gkkp(self,iqpt,ispin,ikpt,ib1,ib2,imu,cartesian=True):
         """
         Get one matrix element at a time using the indexes of the q and k point
         """
-        if not cartesian:
-            raise NotImplementedError('Project the gkkp on the phonon modes')
-        reader = self.get_reader(iqpt,imu)
-        gkkp = reader.get_one_gkkp(ispin,ikpt,ib1,ib2)
-        return gkkp
+        gkkp_rec = []
+        for i in range(self.nmodes):
+            reader = self.get_reader(iqpt,i)
+            gkkp = reader.get_one_gkkp(ispin,ikpt,ib1,ib2)
+            gkkp_rec.append(gkkp)
+
+        gkkp_rec = np.array(gkkp_rec)
+
+        #project cartesian
+        gkkp_cartesian = np.einsum('a,ma->m', gkkp_rec, self.tcartesian)
+        if cartesian: return gkkp_cartesian[imu]
+
+        #project phonon modes 
+        t = self.phonon_modes[iqpt]
+        gkkp_modes = np.einsum('a,ma->m', gkkp_cartesian, t)
+        return gkkp_modes[imu]
 
     def get_filename(self,iqpt,ipert):
         """
