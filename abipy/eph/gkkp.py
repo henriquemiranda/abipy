@@ -8,23 +8,12 @@ import numpy as np
 from collections import defaultdict
 from abipy.electrons.ebands import ElectronsReader
 from monty.string import marquee
+from abipy.tools.plotting import add_fig_kwargs
 
 __all__ = [
-    "GKKPPlotter",
     "GKKPReader",
     "MultiGKKPReader"
 ]
-
-class GKKPPlotter():
-    """
-    Plot the electron-phonon matrix elements
-    """
-    def __init__(self,reader):
-        pass
-
-    def __str__(self):
-        lines = []; app = lines.append
-        return "\n".join(lines)
 
 class GKKPReader(ElectronsReader):
     """
@@ -148,6 +137,18 @@ class MultiGKKPReader():
     def nqpoints(self):
         return len(self.qpoints)
 
+    @property
+    def qpoints_dist(self):
+        if not hasattr(self,'_qpoints_dist'):
+            self._qpoints_dist = np.array([ np.linalg.norm(qpt) for qpt in self.qpoints ])
+        return self._qpoints_dist
+
+    @property
+    def kpoints_dist(self):
+        if not hasattr(self,'_kpoints_dist'): 
+            self._kpoints_dist = np.array([ np.linalg.norm(kpt) for kpt in self.kpoints ])
+        return self._kpoints_dist
+
     @classmethod
     def from_flowdir(cls,flowdir):
         """Find all GKKP files in the flow"""
@@ -173,7 +174,7 @@ class MultiGKKPReader():
             filenames_list.extend(task.outdir.has_abiext("GKQ",single_file=False))
         return cls(filenames_list)
 
-    def get_gkkp_fix_k(self,ispin,kpt,ib1,ib2,imu,cartesian=True):
+    def get_gkkp_fix_k(self,ispin,kpt,imu,ib1,ib2,cartesian=True):
         """
         Get a slice of GKKP matrix elements by fixing k
         the resulting array has dimensions of nqpoints
@@ -184,7 +185,7 @@ class MultiGKKPReader():
             gkkp_fix_k[iqpt] = self.get_one_gkkp(iqpt,ispin,ikpt,ib1,ib2,imu,cartesian=cartesian)
         return self.qpoints, gkkp_fix_k
 
-    def get_gkkp_fix_q(self,ispin,qpt,ib1,ib2,imu,cartesian=True):
+    def get_gkkp_fix_q(self,ispin,qpt,imu,ib1,ib2,cartesian=True):
         """
         Get a slice of GKKP matrix elements by fixing q
         the resulting array has dimensions of nkpoints
@@ -194,6 +195,36 @@ class MultiGKKPReader():
         for ikpt,kpt in enumerate(self.kpoints):
             gkkp_fix_q[ikpt] = self.get_one_gkkp(iqpt,ispin,ikpt,ib1,ib2,imu,cartesian=cartesian)
         return self.kpoints, gkkp_fix_q
+
+    def plot_dispersionq_ax(self,ax,ispin,imu,ib1,ib2,kpt=(0,0,0),f=np.abs):
+        """
+        Plot the magnitude of the electron-phonon matrix elments along a path
+        """
+        kpoints, gkkp = self.get_gkkp_fix_k(ispin,kpt,imu,ib1,ib2)
+        ax.scatter(self.qpoints_dist,f(gkkp))
+
+    def plot_dispersionk_ax(self,ax,ispin,imu,ib1,ib2,qpt=(0,0,0),f=np.abs):
+        """
+        Plot the magnitude of the electron-phonon matrix elements along a path
+        """
+        qpoints, gkkp = self.get_gkkp_fix_q(ispin,qpt,imu,ib1,ib2)
+        ax.scatter(self.kpoints_dist,f(gkkp))
+
+    @add_fig_kwargs
+    def plot_dispersionk(self,ispin,imu,ib1,ib2,qpt=(0,0,0),**kwargs):
+        import matplotlib.pyplot as plt
+        fig = plt.figure()
+        ax = fig.add_subplot(1,1,1)
+        self.plot_dispersionk_ax(ax,ispin,imu,ib1,ib2,qpt=qpt,**kwargs)
+        return fig
+
+    @add_fig_kwargs
+    def plot_dispersionq(self,ispin,imu,ib1,ib2,kpt=(0,0,0),**kwargs):
+        import matplotlib.pyplot as plt
+        fig = plt.figure()
+        ax = fig.add_subplot(1,1,1)
+        self.plot_dispersionq_ax(ax,ispin,imu,ib1,ib2,kpt=kpt,**kwargs)
+        return fig
 
     @property
     def tcartesian(self):
