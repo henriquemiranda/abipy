@@ -10,6 +10,7 @@ import os
 import six
 import inspect
 import itertools
+import numpy as np
 
 from collections import OrderedDict, deque
 from functools import wraps
@@ -68,6 +69,11 @@ class Robot(NotebookWriter):
         for subcls in cls.__subclasses__():
             if subcls.EXT in (ext, ext.upper()):
                 return subcls
+
+        # anaddb.nc does not follow the extension rule...
+        if ext.lower() == "anaddb":
+            from abipy.dfpt.anaddbnc import AnaddbNcRobot as subcls
+            return subcls
 
         raise ValueError("Cannot find Robot subclass associated to extension %s\n" % ext +
                          "The list of supported extensions (case insensitive) is:\n%s" %
@@ -152,6 +158,10 @@ class Robot(NotebookWriter):
     @classmethod
     def class_handles_filename(cls, filename):
         """True if robot class handles filename."""
+        # Special treatment of AnaddbNcRobot
+        if cls.EXT == "anaddb" and os.path.basename(filename).lower() == "anaddb.nc":
+            return True
+
         return (filename.endswith("_" + cls.EXT + ".nc") or
                 filename.endswith("." + cls.EXT))  # This for .abo
 
@@ -171,7 +181,9 @@ class Robot(NotebookWriter):
         for i, f in enumerate(filenames):
             try:
                 abifile = abiopen(f)
-            except Exception:
+            except Exception as exc:
+                cprint("Exception while opening file: `%s`" % str(f), "red")
+                cprint(exc, "red")
                 abifile = None
 
             if abifile is not None:
@@ -499,12 +511,33 @@ class Robot(NotebookWriter):
 
     def _repr_html_(self):
         """Integration with jupyter_ notebooks."""
-        return "<ol>\n{}\n</ol>".format("\n".join("<li>%s</li>" % label for label, abifile in self.items()))
+        return '<ol start="0">\n{}\n</ol>'.format("\n".join("<li>%s</li>" % label for label, abifile in self.items()))
 
     @property
     def abifiles(self):
         """List of netcdf files."""
         return list(self._abifiles.values())
+
+    def has_different_structures(self, rtol=1e-05, atol=1e-08):
+        """
+        Check if structures are equivalent,
+        return string with info about differences (if any).
+        """
+        if len(self) <= 1: return ""
+        formulas = set([af.structure.composition.formula for af in self.abifiles])
+        if len(formulas) != 1:
+            return "Found structures with different full formulas: %s" % str(formulas)
+
+        lines = []
+        s0 = self.abifiles[0].structure
+        for abifile in self.abifiles[1:]:
+            s1 = abifile.structure
+            if not np.allclose(s0.lattice.matrix, s1.lattice.matrix, rtol=rtol, atol=atol):
+                lines.append("Structures have different lattice:")
+            if not np.allclose(s0.frac_coords, s1.frac_coords, rtol=rtol, atol=atol):
+                lines.append("Structures have different atomic positions:")
+
+        return "\n".join(lines)
 
     #def apply(self, func_or_string, args=(), **kwargs):
     #    """
@@ -992,13 +1025,13 @@ Expecting callable or attribute name or key in abifile.params""" % (type(hue), s
 
         # Define callbacks. docstrings will be used as ylabels.
         def a(afile):
-            "a [Ang]"
+            "a (Ang)"
             return getattr(afile, key).lattice.a
         def b(afile):
-            "b [Ang]"
+            "b (Ang)"
             return getattr(afile, key).lattice.b
         def c(afile):
-            "c [Ang]"
+            "c (Ang)"
             return getattr(afile, key).lattice.c
         def volume(afile):
             r"$V$"

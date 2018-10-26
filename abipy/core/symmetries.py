@@ -11,10 +11,10 @@ import numpy as np
 import spglib
 
 from six.moves import cStringIO
-from tabulate import tabulate
 from monty.string import is_string
 from monty.itertools import iuptri
 from monty.functools import lazy_property
+from monty.collections import dict2namedtuple
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 try:
     from pymatgen.util.serialization import SlotPickleMixin
@@ -118,7 +118,7 @@ def _get_det(mat):
 class Operation(object):
     """
     Abstract base class that defines the methods that must be
-    implememted by the concrete class representing some sort of operation
+    implemented by the concrete class representing some sort of operation
     """
     @abc.abstractmethod
     def __eq__(self, other):
@@ -146,6 +146,17 @@ class Operation(object):
     @abc.abstractproperty
     def isE(self):
         """True if self is the identity operator"""
+
+    #def commute(self, other)
+    #    return self * other == other * self
+
+    #def commutator(self, other)
+    #    return self * other - other * self
+
+    #def anticommute(self, other)
+    #    return self * other == - other * self
+
+    #def direct_product(self, other)
 
 
 class SymmOp(Operation, SlotPickleMixin):
@@ -226,7 +237,7 @@ class SymmOp(Operation, SlotPickleMixin):
                               time_sign=self.time_sign,
                               afm_sign=self.afm_sign)
 
-    @property
+    @lazy_property
     def isE(self):
         """True if identity operator."""
         return (np.all(self.rot_r == np.eye(3, dtype=np.int)) and
@@ -235,61 +246,68 @@ class SymmOp(Operation, SlotPickleMixin):
                 self.afm_sign == 1)
     # end operator protocol.
 
+    #@lazy_property
+    #def order(self):
+    #    """Order of the operation."""
+    #    n = 0
+    #    o = self
+    #    while m < 1000:
+    #        if o.isE: return n
+    #        n += 1
+    #        o = self * o
+    #    else:
+    #        raise ValueError("Cannot find order")
+
     def __repr__(self):
         return str(self)
 
     def __str__(self):
+        return self.to_string()
+
+    def to_string(self, verbose=0):
         def vec2str(vec):
             return "%2d,%2d,%2d" % tuple(v for v in vec)
 
         s = ""
         for i in range(3):
-            s +=  "[" + vec2str(self.rot_r[i]) + ", %.3f]  " % self.tau[i] + "[" + vec2str(self.rot_g[i]) + "] "
-            if i == 0:
-                s += " time_sign=%2d, afm_sign=%2d, det=%2d" % (self.time_sign, self.afm_sign, self.det)
+            s += "[" + vec2str(self.rot_r[i]) + ", %.3f]  " % self.tau[i] + "[" + vec2str(self.rot_g[i]) + "] "
+            if i == 2:
+                s += ", time_sign = %+1d, afm_sign = %+1d, det = %+1d" % (self.time_sign, self.afm_sign, self.det)
             s += "\n"
 
         return s
 
-    @property
+    @lazy_property
     def is_symmorphic(self):
         """True if the fractional translation is non-zero."""
         return np.any(np.abs(self.tau) > 0.0)
 
-    @property
+    @lazy_property
     def det(self):
         """Determinant of the rotation matrix [-1, +1]."""
-        try:
-            return self._det
-        except AttributeError:
-            self._det = _get_det(self.rot_r)
-            return self._det
+        return _get_det(self.rot_r)
 
-    @property
+    @lazy_property
     def trace(self):
         """Trace of the rotation matrix."""
-        try:
-            return self._trace
-        except AttributeError:
-            self._trace = self.rot_r.trace()
-            return self._trace
+        return self.rot_r.trace()
 
-    @property
+    @lazy_property
     def is_proper(self):
         """True if the rotational part has determinant == 1."""
         return self.det == +1
 
-    @property
+    @lazy_property
     def has_timerev(self):
         """True if symmetry contains the time-reversal operator."""
         return self.time_sign == -1
 
-    @property
+    @lazy_property
     def is_fm(self):
         """True if self if ferromagnetic symmetry."""
         return self.afm_sign == +1
 
-    @property
+    @lazy_property
     def is_afm(self):
         """True if self if anti-ferromagnetic symmetry."""
         return self.afm_sign == -1
@@ -427,7 +445,7 @@ class OpSequence(collections.Sequence):
             return -1
 
     def is_group(self):
-        """True if the list of operations represent a group."""
+        """True if this set of operations represent a group."""
         check = 0
 
         # Identity must be present.
@@ -450,7 +468,7 @@ class OpSequence(collections.Sequence):
         return check == 0
 
     def is_commutative(self):
-        """True if operations in self commute with each other."""
+        """True if all operations commute with each other."""
         for op1, op2 in iuptri(self, diago=False):
             if op1 * op2 != op2 * op1:
                 return False
@@ -458,7 +476,7 @@ class OpSequence(collections.Sequence):
         return True
 
     def is_abelian_group(self):
-        """True if self is a commutative group."""
+        """True if commutative group."""
         return self.is_commutative() and self.is_group()
 
     def asdict(self):
@@ -467,6 +485,15 @@ class OpSequence(collections.Sequence):
         the values are the indices of the operations in the iterable.
         """
         return {op: idx for idx, op in enumerate(self)}
+
+    #def is_subset(self, other)
+    #    indmap = {}
+    #    for i, op in self:
+    #        j = other.find(op)
+    #        if j != -1: indmap[i] = j
+    #    return indmap
+
+    #def is_superset(self, other)
 
     @lazy_property
     def mult_table(self):
@@ -734,6 +761,29 @@ class AbinitSpaceGroup(OpSequence):
 
         return tuple(symmops)
 
+    def symeq(self, k1_frac_coords, k2_frac_coords, atol=None):
+        """
+        Test whether two k-points in fractional coordinates are symmetry equivalent
+        i.e. if there's a symmetry operations TO (including time-reversal T, if present)
+	such that::
+
+            TO(k1) = k2 + G0
+
+	Return: namedtuple with::
+
+            isym: The index of the symmetry operation such that TS(k1) = k2 + G0
+                Set to -1 if k1 and k2 are not related by symmetry.
+            op: Symmetry operation.
+            g0: numpy vector.
+        """
+        for isym, sym in enumerate(self):
+            sk_coords = sym.rotate_k(k1_frac_coords, wrap_tows=False)
+            if issamek(sk_coords, k2_frac_coords, atol=atol):
+                g0 = sym.rotate_k(k1_frac_coords) - k2_frac_coords
+                return dict2namedtuple(isym=isym, op=self[isym], g0=g0)
+
+        return dict2namedtuple(isym=-1, op=None, g0=None)
+
     def find_little_group(self, kpoint):
         """
         Find the little group of the kpoint.
@@ -822,7 +872,7 @@ class LittleGroup(OpSequence):
 
         # Add character_table from Bilbao database.
         bilbao_ptgrp = bilbao_ptgroup(self.kgroup.sch_symbol)
-        lines.extend(l.strip() for l in bilbao_ptgrp.to_string().splitlines())
+        app(bilbao_ptgrp.to_string(verbose=verbose))
         app("")
 
         # Write warning if non-symmorphic little group with k-point at zone border.
@@ -838,6 +888,7 @@ class LittleGroup(OpSequence):
 class LatticePointGroup(OpSequence):
 
     def __init__(self, rotations):
+        rotations = np.reshape(rotations, (-1, 3, 3))
         self._ops = [LatticeRotation(rot) for rot in rotations]
 
         # Call spglib to get the Herm symbol.
@@ -869,7 +920,6 @@ class LatticePointGroup(OpSequence):
         return sch2spgid(self.sch_symbol)
 
 
-
 class LatticeRotation(Operation):
     """
     This object defines a pure rotation of the lattice (proper, improper, mirror symmetry)
@@ -886,7 +936,7 @@ class LatticeRotation(Operation):
     _E3D = np.identity(3,  np.int)
 
     def __init__(self, mat):
-        self.mat = np.matrix(mat, np.int)
+        self.mat = np.asarray(mat, dtype=np.int)
         self.mat.shape = (3, 3)
 
     def _find_order_and_rootinv(self):
@@ -922,7 +972,7 @@ class LatticeRotation(Operation):
         return np.allclose(self.mat, other.mat)
 
     def __mul__(self, other):
-        return self.__class__(self.mat * other.mat)
+        return self.__class__(np.matmul(self.mat, other.mat))
 
     def __hash__(self):
         return int(8 * self.trace + 4 * self.det)
@@ -949,7 +999,8 @@ class LatticeRotation(Operation):
 
     def __pow__(self, intexp, modulo=1):
         if intexp ==  0: return self.__class__(self._E3D)
-        if intexp  >  0: return self.__class__(self.mat ** intexp)
+        #if intexp  >  0: return self.__class__(self.mat ** intexp)
+        if intexp  >  0: return self.__class__(np.linalg.matrix_power(self.mat, intexp))
         if intexp == -1: return self.inverse()
         if intexp  <  0: return self.__pow__(-intexp).inverse()
         raise TypeError("type %s is not supported in __pow__" % type(intexp))
@@ -971,31 +1022,27 @@ class LatticeRotation(Operation):
             self._order, self._root_inv = self._find_order_and_rootinv()
             return self._root_inv
 
-    @property
+    @lazy_property
     def det(self):
         """Return the determinant of a symmetry matrix mat[3,3]. It must be +-1"""
-        try:
-            return self._det
-        except AttributeError:
-            self._det = _get_det(self.mat)
-            return self._det
+        return _get_det(self.mat)
 
-    @property
+    @lazy_property
     def trace(self):
         """The trace of the rotation matrix"""
-        return self.mat.trace()[0, 0]
+        return self.mat.trace()
 
-    @property
+    @lazy_property
     def is_proper(self):
         """True if proper rotation"""
         return self.det == 1
 
-    @property
+    @lazy_property
     def isI(self):
         """True if self is the inversion operation."""
         return np.allclose(self.mat, -self._E3D)
 
-    @property
+    @lazy_property
     def name(self):
         # Sign of the determinant (only if improper)
         name = "-" if self.det == -1 else ""
@@ -1046,6 +1093,9 @@ class LatticeRotation(Operation):
     #    return t
 
 
+# TODO: Need to find an easy way to map classes in internal database
+# onto classes computed by client code when calculation has been done
+# with non-conventional settings (spglib?)
 class Irrep(object):
     """
     This object represents an irreducible representation.
@@ -1090,6 +1140,9 @@ class Irrep(object):
     def character(self):
         return self._character
 
+    #@lazy_property
+    #def dataframe(self):
+
 
 def bilbao_ptgroup(sch_symbol):
     """
@@ -1113,7 +1166,7 @@ class BilbaoPointGroup(object):
     def __init__(self, sch_symbol, rotations, class_names, class_range, irreps):
         # Rotations are grouped in classes.
         self.sch_symbol = sch_symbol
-        self.rotations = rotations
+        self.rotations = np.reshape(rotations, (-1, 3, 3))
         self.class_names = class_names
         self.nclass = len(class_names)
 
@@ -1157,29 +1210,58 @@ class BilbaoPointGroup(object):
         """List with the names of the irreps."""
         return list(self.irreps_by_name.keys())
 
-    @property
+    @lazy_property
     def character_table(self):
-        """Table of strings with the character of the irreps."""
+        """
+        Dataframe with irreps.
+        """
         # 1st row: ptgroup_name class names and multiplicity of each class
+        #name_mult = [name + " [" + str(mult) + "]" for (name, mult) in zip(self.class_names, self.class_len)]
+        #table = [[self.sch_symbol] + name_mult]
+        #app = table.append
+
+        ## Add row: irrep_name, character.
+        #for irrep in self.irreps:
+        #    character = list(map(str, irrep.character))
+        #    app([irrep.name] + character)
+
+        #from tabulate import tabulate
+        #s = tabulate(table[1:], headers=table[0], tablefmt="simple", numalign="left")
+        #print(s)
+
+        # Caveat: class names are not necessarly unique --> use np.stack
+        import pandas as pd
         name_mult = [name + " [" + str(mult) + "]" for (name, mult) in zip(self.class_names, self.class_len)]
-        table = [[self.sch_symbol] + name_mult]
-        app = table.append
+        columns = ["name"] + name_mult
 
-        # Add row: irrep_name, character.
-        for irrep in self.irreps:
-            character = list(map(str, irrep.character))
-            app([irrep.name] + character)
+        stack = np.stack([irrep.character for irrep in self.irreps])
+        index = [irrep.name for irrep in self.irreps]
+        df = pd.DataFrame(stack, columns=name_mult, index=index)
+        df.index.name = "Irrep"
+        df.columns.name = self.sch_symbol
 
-        return table
+	# TODO
+        #print(df)
+        # Convert complex --> real if all entries in a colums are real.
+        #for k in name_mult:
+        #    if np.all(np.isreal(df[k].values)):
+        #        #df[k] = df[k].values.real
+        #        df[k] = df[k].astype(float)
 
-    def to_string(self, tablefmt="simple", numalign="left"):
+        return df
+
+    def to_string(self, verbose=0):
         """
-        Write a string with the character_table to the given ``stream``.
-        ``tablefmt`` and ``numalign`` options are passed to ``tabulate``.
+        Return string with the character_table
         """
-        s = tabulate(self.character_table[1:], headers=self.character_table[0],
-                     tablefmt=tablefmt, numalign=numalign)
-        return s
+        return self.character_table.to_string()
+
+    #def decompose(self, character):
+    #   od = collections.OrderedDict()
+    #   for irrep in self.irreps:
+    #       irrep.name
+    #       irrep.character
+    #   return od
 
     #def show_irrep(self, irrep_name):
     #    """Show the mapping rotation --> irrep mat."""
@@ -1199,6 +1281,7 @@ class BilbaoPointGroup(object):
         """
         Perform internal consistency check. Return 0 if success
         """
+        #print("rotations\n", self.rotations)
         rot_group = LatticePointGroup(self.rotations)
         if not rot_group.is_group():
             print("rotations do not form a group!")

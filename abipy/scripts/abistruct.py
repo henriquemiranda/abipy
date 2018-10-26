@@ -18,7 +18,7 @@ from monty.termcolor import cprint
 from pymatgen.io.vasp.outputs import Xdatcar
 from abipy import abilab
 from abipy.core.symmetries import AbinitSpaceGroup
-from abipy.core.kpoints import Ktables, Kpoint
+from abipy.core.kpoints import Ktables, Kpoint, IrredZone
 from abipy.core.structure import diff_structures
 from abipy.iotools.visualizer import Visualizer
 from abipy.iotools.xsf import xsf_write_structure
@@ -52,6 +52,17 @@ def save_structure(structure, options):
 
     structure.to(filename=options.savefile)
 
+
+def check_ordered_structure(structure):
+    """Print a warning and sys.exit 1 if structure is disordered."""
+    if not structure.is_ordered:
+        cprint("""
+Cannot handle disordered structure with fractional site occupancies.
+Use OrderDisorderedStructureTransformation or EnumerateStructureTransformation
+to build an appropriate supercell from partial occupancies.""", color="magenta")
+        sys.exit(1)
+
+
 def get_epilog():
     return """\
 Usage example:
@@ -66,6 +77,10 @@ Usage example:
                                               and save "abisanitized" structure to file.
   abistruct.py conventional FILE           => Read structure from FILE, generate conventional structure
                                               following doi:10.1016/j.commatsci.2010.05.010
+  abistruct.py proto FILE                 => Read structure from FILE, find possible crystallographic prototypes:
+                                             in the AFLOW library of crystallographic prototypes.
+                                             http://doi.org/10.1016/j.commatsci.2017.01.017
+
 ##################
 # Conversion tools
 ##################
@@ -92,6 +107,8 @@ Usage example:
   abistruct.py lgk FILE -k 0.25 0 0        => Read structure from FILE, find little group of k-point,
                                               print Bilbao character table.
   abistruct.py kstar FILE -k 0.25 0 0      => Read structure from FILE, print star of k-point.
+  abistruct.py keq FILE -k 0.5 0 0 0 0.5 0  => Read structure from FILE, test whether k1 and k2 are
+                                               symmetry equivalent k-points.
 
 ###############
 # Miscelleanous
@@ -151,6 +168,7 @@ def get_parser(with_epilog=False):
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('-V', '--version', action='version', version=abilab.__version__)
 
+    # Parser for commands that need to call spglib.
     spgopt_parser = argparse.ArgumentParser(add_help=False)
     spgopt_parser.add_argument('--symprec', default=1e-3, type=float,
         help="""\
@@ -183,15 +201,16 @@ codes), a looser tolerance of 0.1 (the value used in Materials Project) is often
         group.add_argument('--primitive-standard', default=False, action='store_true',
             help="Enforce primitive standard cell.")
 
-    supported_formats = "(abivars, cif, xsf, poscar, qe, cssr, json, None)"
-    def add_format_arg(parser, default, option=True):
+    supported_formats = "(abivars, cif, xsf, poscar, qe, siesta, wannier90, cssr, json, None)"
+    def add_format_arg(parser, default, option=True, formats=None):
         """Add --format option to a parser with default value `default`."""
+        formats = supported_formats if formats is None else formats
         if option:
             parser.add_argument("-f", "--format", default=default, type=str,
-                help="Output format. Default: %s. Accept: %s" % (default, supported_formats))
+                help="Output format. Default: %s. Accept: %s" % (default, formats))
         else:
             parser.add_argument('format', nargs="?", default=default, type=str,
-                help="Output format. Default: %s. Accept: %s" % (default, supported_formats))
+                help="Output format. Default: %s. Accept: %s" % (default, formats))
 
     # Create the parsers for the sub-commands
     subparsers = parser.add_subparsers(dest='command', help='sub-command help',
@@ -253,6 +272,14 @@ Has to be all integers. Several options are possible:
         help="Gives a structure with a conventional cell according to certain standards. "
              "The standards are defined in doi:10.1016/j.commatsci.2010.05.010")
 
+    # Subparser for proto.
+    p_proto = subparsers.add_parser('proto', parents=[copts_parser, path_selector],
+        help=("Find prototype in the AFLOW LIBRARY OF CRYSTALLOGRAPHIC PROTOTYPES. "
+              "http://doi.org/10.1016/j.commatsci.2017.01.017"))
+    p_proto.add_argument("--ltol", default=0.2, type=float, help="fractional length tolerance.")
+    p_proto.add_argument("--stol", default=0.3, type=float, help="site tolerance.")
+    p_proto.add_argument("--angle-tol", default=5, type=float, help="angle tolerance.")
+
     # Subparser for neighbors.
     p_neighbors = subparsers.add_parser('neighbors', parents=[copts_parser, path_selector],
                                         help="Get neighbors for each atom in the unit cell, out to a distance radius.")
@@ -297,6 +324,7 @@ closest points in this particular structure. This is usually what you want in a 
     # Subparser for kpath.
     p_kpath = subparsers.add_parser('kpath', parents=[copts_parser, path_selector],
         help="Read structure from file, generate k-path for band-structure calculations.")
+    add_format_arg(p_kpath, default="abinit", formats=["abinit", "wannier90", "siesta"])
     # Subparser for bz.
     p_bz = subparsers.add_parser('bz', parents=[copts_parser, path_selector],
         help="Read structure from file, plot Brillouin zone with matplotlib.")
@@ -346,6 +374,12 @@ closest points in this particular structure. This is usually what you want in a 
     p_kstar.add_argument("-k", "--kpoint", nargs=3, required=True, type=float,
         help="K-point in reduced coordinates e.g. 0.25 0 0")
 
+    # Subparser for keq.
+    p_keq = subparsers.add_parser('keq', parents=[copts_parser, path_selector, spgopt_parser],
+        help="Read structure from file, check whether two k-points are equivalent by symmetry.")
+    p_keq.add_argument("-k", "--kpoints", nargs=6, required=True, type=float,
+        help="K-points in reduced coordinates e.g. 0.25 0 0 0 0.25 0")
+
     # Subparser for visualize command.
     p_visualize = subparsers.add_parser('visualize', parents=[copts_parser, path_selector],
         help=("Visualize the structure with the specified application. "
@@ -356,14 +390,14 @@ closest points in this particular structure. This is usually what you want in a 
     # Options for commands accessing the materials project database.
     mp_rest_parser = argparse.ArgumentParser(add_help=False)
     mp_rest_parser.add_argument("--mapi-key", default=None,
-        help="Pymatgen MAPI_KEY. Use value in .pmgrc.yaml if not specified.")
+        help="Pymatgen PMG_MAPI_KEY. Use value in .pmgrc.yaml if not specified.")
     mp_rest_parser.add_argument("--endpoint", help="Pymatgen database.", default="https://www.materialsproject.org/rest/v2")
     mp_rest_parser.add_argument("-b", "--browser", default=False, action='store_true',
         help="Open materials-project webpages in browser")
 
     # Subparser for mp_id command.
     p_mpid = subparsers.add_parser('mp_id', parents=[copts_parser, mp_rest_parser],
-        help="Get structure from the pymatgen database. Export to format. Requires internet connection and MAPI_KEY.")
+        help="Get structure from the pymatgen database. Export to format. Requires internet connection and PMG_MAPI_KEY.")
     p_mpid.add_argument("mpid", type=str, default=None, help="Pymatgen identifier.")
     add_format_arg(p_mpid, default="cif")
 
@@ -411,7 +445,7 @@ ehull < show_unstable will be shown.""")
 
     # Subparser for animate command.
     p_animate = subparsers.add_parser('animate', parents=[copts_parser, path_selector],
-        help="Read structures from HIST.nc or XDATCAR. Print structures in Xrysden AXSF format to stdout.")
+        help="Read structures from HIST.nc or XDATCAR. Print structures in Xcrysden AXSF format to stdout.")
 
     return parser
 
@@ -454,6 +488,7 @@ def main():
 
     elif options.command == "abispg":
         structure = abilab.Structure.from_file(options.filepath)
+        check_ordered_structure(structure)
         spgrp = structure.abi_spacegroup
 
         if spgrp is not None:
@@ -591,6 +626,28 @@ def main():
         # Save file.
         save_structure(conv, options)
 
+    elif options.command == "proto":
+        structure = abilab.Structure.from_file(options.filepath)
+        from pymatgen.analysis.aflow_prototypes import AflowPrototypeMatcher
+        m = AflowPrototypeMatcher(initial_ltol=options.ltol, initial_stol=options.stol,
+                                  initial_angle_tol=options.angle_tol)
+        dlist = m.get_prototypes(structure)
+        if not dlist:
+            cprint("Cannot find AFLOW prototype for structure.")
+            print(structure.to_string(verbose=option.verbose))
+            return 1
+        else:
+            cprint("Found %d matches" % len(dlist), "green")
+            for d in dlist:
+                if "snl" in d:
+                    snl = d.pop("snl")
+                    if options.verbose: pprint(snl.as_dict())
+                pprint(d)
+                url = "http://aflow.org/CrystalDatabase/%s.html" % d["tags"]["aflow"]
+                print("AFLOW url: %s\n" % url)
+            if not options.verbose:
+                print("Use --verbose to increase output level")
+
     elif options.command == "neighbors":
         abilab.Structure.from_file(options.filepath).print_neighbors(radius=options.radius)
 
@@ -633,15 +690,7 @@ def main():
 
     elif options.command == "kpath":
         structure = abilab.Structure.from_file(options.filepath)
-        print("# Abinit Structure")
-        print(structure.abi_string)
-        print("\n# K-path in reduced coordinates:")
-        print("# tolwfr 1e-20 iscf -2 getden ??")
-        print(" ndivsm 10")
-        print(" kptopt", -(len(structure.hsym_kpoints) - 1))
-        print(" kptbounds")
-        for k in structure.hsym_kpoints:
-            print("    %+.5f  %+.5f  %+.5f" % tuple(k.frac_coords), "#", k.name)
+        print(structure.get_kpath_input_string(fmt=options.format, line_density=10))
 
     elif options.command == "bz":
         abilab.Structure.from_file(options.filepath).plot_bz()
@@ -669,20 +718,19 @@ def main():
 
     elif options.command == "abikmesh":
         structure = abilab.Structure.from_file(options.filepath)
-        from abipy.data.hgh_pseudos import HGH_TABLE
-        gsinp = factories.gs_input(structure, HGH_TABLE, spin_mode="unpolarized", kppa=options.kppa)
+        if options.kppa is None and options.ngkpt is None:
+            raise ValueError("Either ngkpt or kppa must be provided")
+
         if options.kppa is not None:
             print("Calling Abinit to compute the IBZ with kppa:", options.kppa, "and shiftk:", options.shiftk)
-            options.ngkpt = None
+            ibz = IrredZone.from_kppa(structure, options.kppa, options.shiftk,
+                                      kptopt=options.kptopt, verbose=options.verbose)
         else:
-            print("Calling Abinit to compute the IBZ with ngkpt:", options.ngkpt, "and shiftk", options.shiftk)
-        ibz = gsinp.abiget_ibz(ngkpt=options.ngkpt, shiftk=options.shiftk, kptopt=options.kptopt)
-        if options.verbose:
-            print(gsinp)
+            print("Calling Abinit to compute the IBZ with ngkpt:", options.ngkpt, "and shiftk:", options.shiftk)
+            ibz = IrredZone.from_ngkpt(structure, options.ngkpt, options.shiftk,
+                                       kptopt=options.kptopt, verbose=options.verbose)
 
-        print("Found %d points in the IBZ:" % len(ibz.points))
-        for i, (k, w) in enumerate(zip(ibz.points, ibz.weights)):
-            print("%6d) [%+.3f, %+.3f, %+.3f]  weight=%.3f" % (i, k[0], k[1], k[2], w))
+        print(ibz.to_string(verbose=options.verbose))
 
     #elif options.command == "kmesh_jhu":
     #    structure = abilab.Structure.from_file(options.filepath)
@@ -710,9 +758,6 @@ def main():
     elif options.command == "kstar":
         structure = abilab.Structure.from_file(options.filepath)
 
-        # TODO
-        #kstar = structure.get_star_kpoint(options.kpoint, has_timerev=not options.no_time_reversal)
-
         # Call spglib to get spacegroup if Abinit spacegroup is not available.
         if structure.abi_spacegroup is None:
             structure.spgset_abi_spacegroup(has_timerev=not options.no_time_reversal)
@@ -722,6 +767,23 @@ def main():
         print("Found %s points in the star of %s\n" % (len(kstar), repr(kpoint)))
         for k in kstar:
             print(4 * " ", repr(k))
+
+    elif options.command == "keq":
+        structure = abilab.Structure.from_file(options.filepath)
+
+        # Call spglib to get spacegroup if Abinit spacegroup is not available.
+        if structure.abi_spacegroup is None:
+            structure.spgset_abi_spacegroup(has_timerev=not options.no_time_reversal)
+
+        k1, k2 = options.kpoints[:3], options.kpoints[3:6]
+        k1tab = structure.abi_spacegroup.symeq(k1, k2)
+
+        if k1tab.isym != -1:
+            print("\nk1:", k1, "and k2:", k2, "are symmetry equivalent k-points\n")
+            print("Related by the symmetry operation (reduced coords):\n", k1tab.op)
+            print("With umklapp vector Go = TO(k1) - k2 =", k1tab.g0)
+        else:
+            print(k1, "and", k2, "are NOT symmetry equivalent")
 
     elif options.command == "mp_id":
         # Get the Structure corresponding to material_id.

@@ -18,7 +18,7 @@ from warnings import warn
 from collections import OrderedDict
 from monty.collections import AttrDict, dict2namedtuple
 from monty.functools import lazy_property
-from monty.string import is_string, marquee
+from monty.string import is_string, marquee, list_strings
 from monty.termcolor import cprint
 from pymatgen.core.sites import PeriodicSite
 from pymatgen.core.lattice import Lattice
@@ -212,7 +212,7 @@ class Structure(pymatgen.Structure, NotebookWriter):
 
         Returns: |Structure| object
         """
-        if filepath.endswith("_HIST") or filepath.endswith("_HIST.nc"):
+        if filepath.endswith("_HIST.nc"):
             # Abinit history file. In this case we return the last structure!
             # Note that HIST does not follow the etsf-io conventions.
             from abipy.dynamics.hist import HistFile
@@ -498,6 +498,12 @@ class Structure(pymatgen.Structure, NotebookWriter):
        return cls(lattice, species, frac_coords, coords_are_cartesian=False, **kwargs)
 
     @classmethod
+    def from_abistring(cls, string):
+        """Initialize Structure from string with Abinit input variables."""
+        from abipy.abio.abivars import AbinitInputFile
+        return AbinitInputFile.from_string(string).structure
+
+    @classmethod
     def from_abivars(cls, *args, **kwargs):
         """
         Build a |Structure| object from a dictionary with ABINIT variables.
@@ -570,6 +576,12 @@ class Structure(pymatgen.Structure, NotebookWriter):
         return structure_to_abivars(self, **kwargs)
 
     @property
+    def latex_formula(self):
+        """LaTeX formatted formula. E.g., Fe2O3 is transformed to Fe$_{2}$O$_{3}$."""
+        from pymatgen.util.string import latexify
+        return latexify(self.formula)
+
+    @property
     def abi_string(self):
         """Return a string with the ABINIT input associated to this structure."""
         from abipy.abio.variable import InputVariable
@@ -586,7 +598,7 @@ class Structure(pymatgen.Structure, NotebookWriter):
         """
         Gives a structure with a conventional cell according to certain
 	standards. The standards are defined in :cite:`Setyawan2010`
-        They basically enforce as much as possible norm(a1)<norm(a2)<norm(a3)
+        They basically enforce as much as possible norm(a1) < norm(a2) < norm(a3)
 
         Returns:
             The structure in a conventional standardized cell
@@ -889,6 +901,23 @@ class Structure(pymatgen.Structure, NotebookWriter):
 
         return abispg
 
+    def abiget_spginfo(self, tolsym=None, pre=None):
+        """
+	Call Abinit to get spacegroup information.
+	Return dictionary with e.g. {'bravais': 'Bravais cF (face-center cubic)', 'spg_number': 227, 'spg_symbol': 'Fd-3m'}.
+
+	Args:
+            tolsym: Abinit tolsym input variable. None correspondes to the default value.
+	    pre: Keywords in dictionary are prepended with this string
+        """
+        from abipy.data.hgh_pseudos import HGH_TABLE
+        from abipy.abio import factories
+        gsinp = factories.gs_input(self, HGH_TABLE, spin_mode="unpolarized")
+        gsinp["chkprim"] = 0
+        d = gsinp.abiget_spacegroup(tolsym=tolsym, retdict=True)
+        if pre: d = {pre + k: v for k, v in d.items()}
+        return d
+
     def print_neighbors(self, radius=2.0):
         """
         Get neighbors for each atom in the unit cell, out to a distance ``radius`` in Angstrom
@@ -932,6 +961,32 @@ class Structure(pymatgen.Structure, NotebookWriter):
         from .kpoints import KpointList
         return KpointList(self.reciprocal_lattice, frac_coords, weights=None, names=names)
 
+    def get_kcoords_from_names(self, knames, cart_coords=False):
+        """
+        Return numpy array with the fractional coordinates of the high-symmetry k-points listed in `knames`.
+
+        Args:
+            knames: List of strings with the k-point labels.
+            cart_coords: True if the ``coords`` dataframe should contain Cartesian cordinates
+                instead of Reduced coordinates.
+        """
+        kname2frac = {k.name: k.frac_coords for k in self.hsym_kpoints}
+        # Add aliases for Gamma.
+        if r"$\Gamma$" in kname2frac:
+            kname2frac["G"] = kname2frac[r"$\Gamma$"]
+            kname2frac["Gamma"] = kname2frac[r"$\Gamma$"]
+
+        try:
+            kcoords = np.reshape([kname2frac[name] for name in list_strings(knames)], (-1, 3))
+        except KeyError:
+            cprint("Internal list of high-symmetry k-points:\n" % str(self.hsym_kpoints))
+            raise
+
+        if cart_coords:
+            kcoords = self.reciprocal_lattice.get_cartesian_coords(kcoords)
+
+        return kcoords
+
     @lazy_property
     def hsym_stars(self):
         """
@@ -960,16 +1015,32 @@ class Structure(pymatgen.Structure, NotebookWriter):
         return self.__class__.from_sites(sorted(self.sites, key=lambda site: site.specie.Z))
 
     def findname_in_hsym_stars(self, kpoint):
-        """Returns the name of the special k-point, None if kpoint is unknown."""
+        """
+        Returns the name of the special k-point, None if kpoint is unknown.
+        """
         if self.abi_spacegroup is None: return None
+
+        from .kpoints import Kpoint
+        kpoint = Kpoint.as_kpoint(kpoint, self.reciprocal_lattice)
+
+        # Try to find kpoint in hsym_stars without taking into accout symmetry operation (compare with base_point)
+        # Important if there are symmetry equivalent k-points in hsym_kpoints e.g. K and U in FCC lattice
+        # as U should not be mapped onto K as done in the second loop below.
+        from .kpoints import issamek
         for star in self.hsym_stars:
-            if star.find(kpoint) != -1:
+            if issamek(kpoint.frac_coords, star.base_point.frac_coords):
+                return star.name
+
+	# Now check if kpoint is in one of the stars.
+        for star in self.hsym_stars:
+            i = star.find(kpoint)
+            if i != -1:
+                #print("input kpt:", kpoint, "star image", star[i], star[i].name)
                 return star.name
         else:
             return None
 
     def get_symbol2indices(self):
-
         """
         Return a dictionary mapping chemical symbols to numpy array with the position of the atoms.
 
@@ -1027,7 +1098,7 @@ class Structure(pymatgen.Structure, NotebookWriter):
         """
         return np.sqrt(self.dot(coords, coords, space=space, frac_coords=frac_coords))
 
-    def get_dict4pandas(self, with_spglib=True):
+    def get_dict4pandas(self, symprec=1e-2, angle_tolerance=5.0, with_spglib=True):
         """
         Return a :class:`OrderedDict` with the most important structural parameters:
 
@@ -1040,16 +1111,21 @@ class Structure(pymatgen.Structure, NotebookWriter):
 
         Args:
             with_spglib (bool): If True, spglib is invoked to get the spacegroup symbol and number
+            symprec (float): Symmetry precision used to refine the structure.
+            angle_tolerance (float): Tolerance on angles.
         """
         abc, angles = self.lattice.abc, self.lattice.angles
+
         # Get spacegroup info from spglib.
-        spglib_symbol, spglib_number = None, None
+        spglib_symbol, spglib_number, spglib_lattice_type = None, None, None
         if with_spglib:
             try:
-                spglib_symbol, spglib_number = self.get_space_group_info()
+                spglib_symbol, spglib_number = self.get_space_group_info(symprec=symprec, angle_tolerance=angle_tolerance)
+                spglib_lattice_type = self.spget_lattice_type(symprec=symprec, angle_tolerance=angle_tolerance)
             except Exception as exc:
                 cprint("Spglib couldn't find space group symbol and number for composition %s" % str(self.composition), "red")
                 print("Exception:\n", exc)
+
         # Get spacegroup number computed by Abinit if available.
         abispg_number = None if self.abi_spacegroup is None else self.abi_spacegroup.spgid
 
@@ -1062,6 +1138,7 @@ class Structure(pymatgen.Structure, NotebookWriter):
         if with_spglib:
             od["spglib_symb"] = spglib_symbol
             od["spglib_num"] = spglib_number
+            od["spglib_lattice_type"] = spglib_lattice_type
 
         return od
 
@@ -1238,13 +1315,20 @@ class Structure(pymatgen.Structure, NotebookWriter):
     def convert(self, fmt="cif", **kwargs):
         """
         Return string with the structure in the given format `fmt`
-        Options include "abivars", "cif", "xsf", "poscar", "cssr", "json".
+        Options include "abivars", "cif", "xsf", "poscar", "siesta", "wannier90", "cssr", "json".
         """
-        if fmt == "abivars":
+        if fmt in ("abivars", "abinit"):
             return self.abi_string
+        elif fmt == "abipython":
+            return pformat(self.to_abivars(), indent=4)
         elif fmt == "qe":
             from pymatgen.io.pwscf import PWInput
             return str(PWInput(self, pseudo={s: s + ".pseudo" for s in self.symbol_set}))
+        elif fmt == "siesta":
+            return structure2siesta(self)
+        elif fmt in ("wannier90", "w90"):
+            from abipy.wannier90.win import structure2wannier90
+            return structure2wannier90(self)
         else:
             return super(Structure, self).to(fmt=fmt, **kwargs)
 
@@ -1632,6 +1716,52 @@ class Structure(pymatgen.Structure, NotebookWriter):
         kptbounds = [k.frac_coords for k in self.hsym_kpoints]
         return np.reshape(kptbounds, (-1, 3))
 
+    def get_kpath_input_string(self, fmt="abinit", line_density=10):
+        """
+        Return string with input variables for band-structure calculations
+        in the format used by code `fmt`.
+        Use `line_density` points for the smallest segment (if supported by code).
+        """
+        lines = []; app = lines.append
+        if fmt in ("abinit", "abivars"):
+            app("# Abinit Structure")
+            app(self.convert(fmt=fmt))
+            app("\n# K-path in reduced coordinates:")
+            app("# tolwfr 1e-20 iscf -2 getden ??")
+            app(" ndivsm %d" % line_density)
+            app(" kptopt %d" % -(len(self.hsym_kpoints) - 1))
+            app(" kptbounds")
+            for k in self.hsym_kpoints:
+                app("    {:+.5f}  {:+.5f}  {:+.5f}  # {kname}".format(*k.frac_coords, kname=k.name))
+
+        elif fmt in ("wannier90", "w90"):
+            app("# Wannier90 structure")
+            from abipy.wannier90.win import Wannier90Input
+            win = Wannier90Input(self)
+            win.set_kpath()
+            app(win.to_string())
+
+        elif fmt == "siesta":
+            app("# Siesta structure")
+            app(self.convert(fmt=fmt))
+            # Build normalized k-path.
+            from .kpoints import Kpath
+            vertices_names = [(k.frac_coords, k.name) for k in self.hsym_kpoints]
+            kpath = Kpath.from_vertices_and_names(self, vertices_names, line_density=line_density)
+            app("%block BandLines")
+            prev_ik = 0
+            for ik, k in enumerate(kpath):
+                if not k.name: continue
+                n = ik - prev_ik
+                app("{}  {:+.5f}  {:+.5f}  {:+.5f}  # {kname}".format(n if n else 1, *k.frac_coords, kname=k.name))
+                prev_ik = ik
+            app("%endblock BandLines")
+
+        else:
+            raise ValueError("Don't know how to generate string for code: `%s`" % str(fmt))
+
+        return "\n".join(lines)
+
     #def ksampling_from_jhudb(self, **kwargs):
     #    from pymatgen.ext.jhu import get_kpoints
     #    __doc__ = get_kpoints.__doc__
@@ -1670,7 +1800,8 @@ class Structure(pymatgen.Structure, NotebookWriter):
 
     def calc_ngkpt(self, nksmall):
         """
-        Compute the ABINIT variable ``ngkpt`` from the number of divisions used for the smallest lattice vector.
+        Compute the ABINIT variable ``ngkpt`` from the number of divisions used
+        for the smallest lattice vector.
 
         Args:
             nksmall (int): Number of division for the smallest lattice vector.
@@ -1794,7 +1925,7 @@ class Structure(pymatgen.Structure, NotebookWriter):
         """
         nval, table = 0, PseudoTable.as_table(pseudos)
         for site in self:
-            pseudo = table.pseudo_with_symbol(site.species_string)
+            pseudo = table.pseudo_with_symbol(site.specie.symbol)
             nval += pseudo.Z_val
 
         return int(nval) if int(nval) == nval else nval
@@ -1809,7 +1940,7 @@ class Structure(pymatgen.Structure, NotebookWriter):
         table = PseudoTable.as_table(pseudos)
         psp_valences = []
         for site in self:
-            pseudo = table.pseudo_with_symbol(site.species_string)
+            pseudo = table.pseudo_with_symbol(site.specie.symbol)
             psp_valences.append(pseudo.Z_val)
 
         return psp_valences
@@ -1845,7 +1976,8 @@ class Structure(pymatgen.Structure, NotebookWriter):
         return self._write_nb_nbpath(nb, nbpath)
 
 
-def dataframes_from_structures(struct_objects, index=None, with_spglib=True, cart_coords=False):
+def dataframes_from_structures(struct_objects, index=None, symprec=1e-2, angle_tolerance=5,
+	                       with_spglib=True, cart_coords=False):
     """
     Build two pandas Dataframes_ with the most important geometrical parameters associated to
     a list of structures or a list of objects that can be converted into structures.
@@ -1855,6 +1987,8 @@ def dataframes_from_structures(struct_objects, index=None, with_spglib=True, car
             Support filenames, structure objects, Abinit input files, dicts and many more types.
             See ``Structure.as_structure`` for the complete list.
         index: Index of the |pandas-DataFrame|.
+        symprec (float): Symmetry precision used to refine the structure.
+        angle_tolerance (float): Tolerance on angles.
         with_spglib (bool): If True, spglib_ is invoked to get the spacegroup symbol and number.
         cart_coords: True if the ``coords`` dataframe should contain Cartesian cordinates
             instead of Reduced coordinates.
@@ -1875,7 +2009,8 @@ def dataframes_from_structures(struct_objects, index=None, with_spglib=True, car
     structures = [Structure.as_structure(obj) for obj in struct_objects]
     # Build Frame with lattice parameters.
     # Use OrderedDict to have columns ordered nicely.
-    odict_list = [(structure.get_dict4pandas(with_spglib=with_spglib)) for structure in structures]
+    odict_list = [(structure.get_dict4pandas(with_spglib=with_spglib, symprec=symprec, angle_tolerance=angle_tolerance))
+	          for structure in structures]
 
     import pandas as pd
     lattice_frame = pd.DataFrame(odict_list, index=index,
@@ -2037,3 +2172,58 @@ def diff_structures(structures, fmt="cif", mode="table", headers=(), file=sys.st
 
     else:
         raise ValueError("Unsupported mode: `%s`" % str(mode))
+
+
+def structure2siesta(structure, verbose=0):
+    """
+    Return string with structural information in Siesta format from pymatgen structure
+
+    Args:
+        structure: pymatgen structure.
+        verbose: Verbosity level.
+    """
+
+    if not structure.is_ordered:
+        raise NotImplementedError("""\
+Received disordered structure with partial occupancies that cannot be converted into a Siesta input
+Please use OrderDisorderedStructureTransformation or EnumerateStructureTransformation
+to build an appropriate supercell from partial occupancies or alternatively use the Virtual Crystal Approximation.""")
+
+    types_of_specie = structure.types_of_specie
+
+    lines = []
+    app = lines.append
+    app("NumberOfAtoms %d" % len(structure))
+    app("NumberOfSpecies %d" % structure.ntypesp)
+
+    if verbose:
+        app("# The species number followed by the atomic number, and then by the desired label")
+    app("%block ChemicalSpeciesLabel")
+    for itype, specie in enumerate(types_of_specie):
+        app("    %d %d %s" % (itype + 1, specie.number, specie.symbol))
+    app("%endblock ChemicalSpeciesLabel")
+
+    # Write lattice vectors.
+    # Set small values to zero. This usually happens when the CIF file
+    # does not give structure parameters with enough digits.
+    lvectors = np.where(np.abs(structure.lattice.matrix) > 1e-8, structure.lattice.matrix, 0.0)
+    app("LatticeConstant 1.0 Ang")
+    app("%block LatticeVectors")
+    for r in lvectors:
+        app("    %.10f %.10f %.10f" % (r[0], r[1], r[2]))
+    app("%endblock LatticeVectors")
+
+    # Write atomic coordinates
+    #% block AtomicCoordinatesAndAtomicSpecies
+    #4.5000 5.0000 5.0000 1
+    #5.5000 5.0000 5.0000 1
+    #% endblock AtomicCoordinatesAndAtomicSpecies
+    app("AtomicCoordinatesFormat Fractional")
+    app("%block AtomicCoordinatesAndAtomicSpecies")
+    for i, site in enumerate(structure):
+        itype = types_of_specie.index(site.specie)
+        fc = np.where(np.abs(site.frac_coords) > 1e-8, site.frac_coords, 0.0)
+        app("    %.10f %.10f %.10f %d" % (fc[0], fc[1], fc[2], itype + 1))
+    app("%endblock AtomicCoordinatesAndAtomicSpecies")
+
+    return "\n".join(lines)

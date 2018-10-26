@@ -166,6 +166,13 @@ def main():
     if not os.path.exists(options.filepath):
         raise RuntimeError("%s: no such file" % options.filepath)
 
+    #if options.filepath.endswith(".ipynb"):
+    #    import papermill as pm
+    #    nb = pm.read_notebook('notebook.ipynb')
+    #    import IPython
+    #    IPython.embed(header="The Abinit file is bound to the `nb` variable.\n")
+    #    return 0
+
     if not options.notebook:
         abifile = abilab.abiopen(options.filepath)
 
@@ -183,16 +190,30 @@ def main():
                 print(abifile.to_string(verbose=options.verbose))
             else:
                 print(abifile)
-            if not hasattr(abifile, "expose"):
-                raise TypeError("Object of type `%s` does not implement expose method" % type(abifile))
-            abifile.expose(slide_mode=options.slide_mode, slide_timeout=options.slide_timeout,
-                           verbose=options.verbose)
+
+            if hasattr(abifile, "expose"):
+
+                abifile.expose(slide_mode=options.slide_mode, slide_timeout=options.slide_timeout,
+                               verbose=options.verbose)
+            else:
+                if not hasattr(abifile, "yield_figs"):
+                    raise TypeError("Object of type `%s` does not implement (expose or yield_figs methods" % type(abifile))
+                from abipy.tools.plotting import MplExpose
+                with MplExpose(slide_mode=options.slide_mode, slide_timeout=options.slide_timeout,
+                               verbose=options.verbose) as e:
+                    e(abifile.yield_figs())
+
             return 0
 
         # Start ipython shell with namespace
         # Use embed because I don't know how to show a header with start_ipython.
         import IPython
-        IPython.embed(header="The Abinit file is bound to the `abifile` variable.\nTry `print(abifile)`")
+        IPython.embed(header="""
+The Abinit file is bound to the `abifile` variable.
+Use `abifile.<TAB>` to list available methods.
+Use e.g. `abifile.plot?` to access docstring and `abifile.plot??` to visualize source.
+Use `print(abifile)` to print the object.
+""")
 
     else:
         # Call specialized method if the object is a NotebookWriter

@@ -12,7 +12,6 @@ import pickle
 from time import ctime
 from monty.os.path import which
 from monty.termcolor import cprint
-from monty.dev import deprecated
 from monty.string import is_string
 from monty.functools import lazy_property
 from abipy.flowtk.netcdf import NetcdfReader, NO_DEFAULT
@@ -137,21 +136,6 @@ class TextFile(BaseFile):
     def seek(self, offset, whence=0):
         """Set the file's current position, like stdio's fseek()."""
         self._file.seek(offset, whence)
-
-
-@deprecated(message="AbinitOutNcFile is deprecated, use abipy.abio.outputs.OutNcFile")
-class AbinitOutNcFile(NetcdfReader):
-    """
-    Class representing the _OUT.nc file.
-    """
-
-    def get_vars(self, vars, strict=False):
-        # TODO: add a check on the variable names ?
-        default = NO_DEFAULT if strict else None
-        var_values = {}
-        for var in vars:
-            var_values[var] = self.read_value(varname=var, default=default)
-        return var_values
 
 
 @six.add_metaclass(abc.ABCMeta)
@@ -335,14 +319,19 @@ class Has_ElectronBands(object):
         """Plot the electron energy bands with DOS. See the :func:`ElectronBands.plot_with_edos` for the signature."""
         return self.ebands.plot_with_edos(edos, **kwargs)
 
+    def get_edos(self, **kwargs):
+        """Compute the electronic DOS on a linear mesh. Wraps ebands.get_edos."""
+        return self.ebands.get_edos(**kwargs)
+
     def yield_ebands_figs(self, **kwargs):
         """*Generates* a predefined list of matplotlib figures with minimal input from the user."""
+        with_gaps = not self.ebands.has_metallic_scheme
         if self.ebands.kpoints.is_path:
-            yield self.ebands.plot(show=False)
+            yield self.ebands.plot(with_gaps=with_gaps, show=False)
             yield self.ebands.kpoints.plot(show=False)
         else:
             edos = self.ebands.get_edos()
-            yield self.ebands.plot_with_edos(edos, show=False)
+            yield self.ebands.plot_with_edos(edos, with_gaps=with_gaps, show=False)
             yield edos.plot(show=False)
 
     def expose_ebands(self, slide_mode=False, slide_timeout=None, **kwargs):
@@ -378,7 +367,6 @@ class Has_PhononBands(object):
 
     #def plot_phbands_with_phdos(self, phdos, **kwargs):
     #    return self.phbands.plot_with_phdos(phdos, **kwargs)
-
 
     def yield_phbands_figs(self, **kwargs):  # pragma: no cover
         """
@@ -477,12 +465,17 @@ class NotebookWriter(object):
         if which("jupyter") is None:
             raise RuntimeError("Cannot find jupyter in $PATH. Install it with `conda install jupyter or `pip install jupyter`")
 
+        # Use jupyter-lab instead of classic notebook if possible.
+        has_jupyterlab = which("jupyter-lab") is not None
+        #has_jupyterlab = False
+        appname = "jupyter-lab" if has_jupyterlab else "jupyter notebook"
+
         if foreground:
-            return os.system("jupyter notebook %s" % nbpath)
+            return os.system("%s %s" % (appname, nbpath))
         else:
             fd, tmpname = tempfile.mkstemp(text=True)
             print(tmpname)
-            cmd = "jupyter notebook %s" % nbpath
+            cmd = "%s %s" % (appname, nbpath)
             print("Executing:", cmd)
             print("stdout and stderr redirected to %s" % tmpname)
             import subprocess
@@ -603,12 +596,12 @@ abilab.enable_notebook(with_seaborn=True)
             return filepath
 
     # TODO: Activate this
-    #@abc.abstractmethod
-    #def yield_figs(self, **kwargs)
-    #    """
-    #    This function *generates* a predefined list of matplotlib figures with minimal input from the user.
-    #    Used in abiview.py to get a quick look at the results.
-    #    """
+    @abc.abstractmethod
+    def yield_figs(self, **kwargs):  # pragma: no cover
+        """
+        This function *generates* a predefined list of matplotlib figures with minimal input from the user.
+        Used in abiview.py to get a quick look at the results.
+        """
 
     def expose(self, slide_mode=False, slide_timeout=None, **kwargs):
         """

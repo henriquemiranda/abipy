@@ -28,7 +28,7 @@ class TestStructure(AbipyTest):
             assert structure.has_abi_spacegroup
 
             # Call pymatgen machinery to get the high-symmetry stars.
-            print(structure.hsym_stars)
+            str(structure.hsym_stars)
 
             geodict = structure.get_dict4pandas()
             assert geodict["abispg_num"] is not None
@@ -46,6 +46,7 @@ class TestStructure(AbipyTest):
         # Test as_structure and from/to abivars
         si = Structure.as_structure(abidata.cif_file("si.cif"))
         assert si.formula == "Si2"
+        assert si.latex_formula == "Si$_{2}$"
         assert si.abi_spacegroup is None and not si.has_abi_spacegroup
         assert "ntypat" in si.to(fmt="abivars")
 
@@ -53,6 +54,9 @@ class TestStructure(AbipyTest):
         assert spgroup is not None
         assert si.has_abi_spacegroup
         assert si.abi_spacegroup.spgid == 227
+        kfrac_coords = si.get_kcoords_from_names(["G", "X", "L", "Gamma"])
+        self.assert_equal(kfrac_coords,
+            ([[0. , 0. , 0. ], [0.5, 0. , 0.5], [0.5, 0.5, 0.5], [0. , 0. , 0. ]]))
 
         with self.assertRaises(TypeError):
             Structure.as_structure({})
@@ -67,6 +71,10 @@ class TestStructure(AbipyTest):
         # Cannot change spacegroup
         with self.assertRaises(ValueError):
             si_wfk.spgset_abi_spacegroup(has_timerev=True)
+
+        # K and U are equivalent. [5/8, 1/4, 5/8] should return U
+        assert si_wfk.findname_in_hsym_stars([3/8, 3/8, 3/4]) == "K"
+        assert si_wfk.findname_in_hsym_stars([5/8, 1/4, 5/8]) == "U"
 
         # TODO: Fix order of atoms in supercells.
         # Test __mul__, __rmul__ (should return Abipy structures)
@@ -105,8 +113,11 @@ class TestStructure(AbipyTest):
         same_znse = Structure.as_structure(tmp_path)
         assert same_znse == znse
 
-        for fmt in ["abivars", "cif", "POSCAR", "json", "xsf", "qe"]:
+        for fmt in ["abivars", "cif", "POSCAR", "json", "xsf", "qe", "siesta", "wannier90"]:
             assert len(znse.convert(fmt=fmt)) > 0
+
+        for fmt in ["abinit", "w90", "siesta"]:
+            assert len(znse.get_kpath_input_string(fmt=fmt)) > 0
 
         oxi_znse = znse.get_oxi_state_decorated()
         assert len(oxi_znse.abi_string)
@@ -151,8 +162,35 @@ class TestStructure(AbipyTest):
         self.assert_equal(ksamp.ngkpt, [10, 10, 10])
         self.assert_equal(ksamp.shiftk, shiftk)
 
+        lif = Structure.from_abistring("""
+acell      7.7030079150    7.7030079150    7.7030079150 Angstrom
+rprim      0.0000000000    0.5000000000    0.5000000000
+           0.5000000000    0.0000000000    0.5000000000
+           0.5000000000    0.5000000000    0.0000000000
+natom      2
+ntypat     2
+typat      1 2
+znucl      3 9
+xred       0.0000000000    0.0000000000    0.0000000000
+           0.5000000000    0.5000000000    0.5000000000
+""")
+        assert lif.formula == "Li1 F1"
+        same = Structure.rocksalt(7.7030079150, ["Li", "F"], units="ang")
+        self.assert_almost_equal(lif.lattice.a,  same.lattice.a)
+
         si = Structure.from_mpid("mp-149")
         assert si.formula == "Si2"
+
+        # Test abiget_spginfo
+        d = si.abiget_spginfo(tolsym=None, pre="abi_")
+        assert d["abi_spg_symbol"] == "Fd-3m"
+        assert d["abi_spg_number"] == 227
+        assert d["abi_bravais"] == "Bravais cF (face-center cubic)"
+
+        llzo = Structure.from_file(abidata.cif_file("LLZO_oxi.cif"))
+        assert llzo.is_ordered
+        d = llzo.abiget_spginfo(tolsym=0.001)
+        assert d["spg_number"] == 142
 
         mgb2_cod = Structure.from_cod_id(1526507, primitive=True)
         assert mgb2_cod.formula == "Mg1 B2"
@@ -231,7 +269,7 @@ class TestStructure(AbipyTest):
 
         # Test notebook generation.
         if self.has_nbformat():
-            mgb2.write_notebook(nbpath=self.get_tmpname(text=True))
+            assert mgb2.write_notebook(nbpath=self.get_tmpname(text=True))
 
     def test_dataframes_from_structures(self):
         """Testing dataframes from structures."""

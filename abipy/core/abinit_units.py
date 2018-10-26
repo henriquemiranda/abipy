@@ -15,6 +15,7 @@ Bohr_Ang = 0.52917720859
 Ha_cmm1 = 219474.6313705
 # 1 Hartree, in eV
 Ha_eV = 27.21138386
+Ha_to_eV = Ha_eV
 # 1 eV in Hartree
 eV_Ha = 1. / Ha_eV
 # 1 Hartree, in meV
@@ -40,6 +41,9 @@ kb_HaK = kb_eVK / Ha_eV
 amu_emass = 1.660538782e-27 / 9.10938215e-31
 # 1 Ha/Bohr^3, in GPa
 HaBohr3_GPa = Ha_eV / Bohr_Ang**3 * e_Cb * 1.0e+21
+# 1 eV/A^3 to GPa
+eVA3_GPa = 160.21766208
+
 # per mole
 Avogadro = 6.02214179e23
 # 1 Ohm.cm in atomic units

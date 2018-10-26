@@ -139,7 +139,7 @@ Get a quick look to a file
 --------------------------
 
 The :ref:`abiview.py` script is especially designed for this task.
-The syntax is ``abistruct.py COMMAND FILE`` where ``COMMAND`` is either 
+The syntax is ``abiview.py COMMAND FILE`` where ``COMMAND`` is either 
 the Abinit file extension (without ``.nc``, if any) or the AbiPy object we want to visualize.
 
 To get a quick look at the DDB file, use::
@@ -152,7 +152,7 @@ If ``FILE`` contains electronic band energies, use e.g.::
 
     abiview.py ebands out_GSR.nc
 
-to plot the KS eigenvalues (the same command works for other files such as ``WFK.nc``, ``DEN.nc`` etcetera. 
+to plot the KS eigenvalues (the same command works for other files such as ``WFK.nc``, ``DEN.nc`` etc. 
 
 Note that :ref:`abiview.py` uses a predefined logic to visualize the data.
 There are options to tune some parameters and/or export data in different formats
@@ -174,7 +174,7 @@ Visualize a structure
 ---------------------
 
 The visualization of the structure is delegated to external graphical applications
-that must be istalled on your machine. 
+that must be installed on your machine. 
 AbiPy will extract the structure from ``FILE``, convert it to one of the formats 
 supported by the graphical application and finally invoke the executable.
 If you have vesta_ installed in one of the standard 
@@ -231,7 +231,6 @@ to generate a template with the input variables defining the k-path
         +0.37500  +0.37500  +0.75000 # K
         +0.62500  +0.25000  +0.62500 # U
         +0.50000  +0.00000  +0.50000 # X
-
 
 Get neighbors for each atom in the unit cell out to a distance radius
 ---------------------------------------------------------------------
@@ -356,7 +355,7 @@ to print the warnings/comments/errors reported in the Abinit log file ``run.log`
 Export bands to xmgrace format 
 ------------------------------
 
-But |ElectronBands| and |PhononBands| provide a ``to_xmgrace`` method to produce xmgrace_ files.
+Both |ElectronBands| and |PhononBands| provide a ``to_xmgrace`` method to produce xmgrace_ files.
 To export the data to xmgrace, use :ref:`abiview.py` with the ``--xmgrace`` option.
 For electrons, use::
 
@@ -439,6 +438,26 @@ and visualize the crystalline structure with ovito_::
     The XDATCAR format assumes a fixed unit cell so you won't be able
     to visualize the modifications of the unit cell lattice vectors in ovito.
 
+
+Plot results stored in a text file in tabular format
+----------------------------------------------------
+
+Use::
+
+    abiview.py data FILE_WITH_COLUMNS
+
+to plot with matplotlib_ all the columns given in the file.
+By default, the first column is assumed to contain the values for the x-axis
+but it is possible to change this behaviour and use the row index with the `--use-index` option.
+Multiple datasets i.e. multiple sets of data separated by blank lines are supported.
+
+To compare multiple files use::
+
+    abicomp.py data FILE1 FILE2
+
+Obviously one can use standard tools such as gnuplot_ and xmgrace_ but
+the AbiPy scripts are quite handy for a quick analysis of the results.
+
 Compare multiple files
 ----------------------
 
@@ -511,3 +530,12 @@ To list all the variables depending on the ``natom`` dimension, use::
     abidoc.py withdim natom
 
 More options are available. See ``abidoc.py --help``.
+
+Avoid transfering files from the cluster to localhost just to use matplotlib
+----------------------------------------------------------------------------
+
+Use `SSHFS <https://www.digitalocean.com/community/tutorials/how-to-use-sshfs-to-mount-remote-file-systems-over-ssh>`_
+to mount the remote file system over SSH. 
+Now one can execute the AbiPy scripts in a terminal running on the local machine.
+to open/visualize the files stored on the cluster.
+

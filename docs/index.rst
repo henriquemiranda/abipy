@@ -12,7 +12,7 @@
     * - Continuous Integration
       - |travis-status| |coverage-status| 
     * - Documentation
-      - |docs-stable| |docs-devel| |launch-nbviewer| |launch-binder| 
+      - |docs-github| |launch-nbviewer| |launch-binder| 
 
 
 Getting Started
@@ -45,7 +45,7 @@ Workflows
    workflows/taskmanager
    workflows/manager_examples
    flow_gallery/index
-.. flows_howto
+   flows_howto
 
 API
 ===

@@ -13,6 +13,8 @@ import abipy.data as abidata
 import abipy.abilab as abilab
 import abipy.flowtk as flowtk
 
+exclude_py_versions = ["2.7"]
+
 
 def build_flow(options):
     # Set working directory (default is the name of the script with '.py' removed and "run_" replaced by "flow_")
@@ -57,7 +59,8 @@ if os.getenv("READTHEDOCS", False):
     __name__ = None
     import tempfile
     options = flowtk.build_flow_main_parser().parse_args(["-w", tempfile.mkdtemp()])
-    build_flow(options).plot_networkx(with_edge_labels=True, tight_layout=True)
+    #build_flow(options).plot_networkx(with_edge_labels=True, tight_layout=True)
+    build_flow(options).graphviz_imshow()
 
 
 @flowtk.flow_main

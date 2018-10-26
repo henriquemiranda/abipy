@@ -176,6 +176,21 @@ class TestAbinitInput(AbipyTest):
         inp.set_kmesh(ngkpt=(1, 2, 3), shiftk=(1, 2, 3, 4, 5, 6))
         assert inp["kptopt"] == 1 and inp["nshiftk"] == 2
         assert inp.uses_ktimereversal
+        ngkpt, shiftk = inp.get_ngkpt_shiftk()
+        assert ngkpt.tolist() == [1, 2, 3]
+        assert len(shiftk) == 2 and shiftk.ravel().tolist() == [1, 2, 3, 4, 5, 6]
+
+        inp.pop("ngkpt")
+        kptrlatt = [1, 0, 0, 0, 4, 0, 0, 0, 8]
+        shiftk = (0.5, 0.0, 0.0)
+        inp.set_vars(kptrlatt=kptrlatt, nshiftk=1, shiftk=shiftk)
+        ngkpt, shiftk = inp.get_ngkpt_shiftk()
+        assert ngkpt.tolist() == [1, 4, 8]
+        assert len(shiftk) == 1 and shiftk.ravel().tolist() == [0.5, 0.0, 0.0]
+
+        inp.set_vars(kptrlatt = [1, 2, 0, 0, 4, 0, 0, 0, 8], nshiftk=1, shiftk=shiftk)
+        ngkpt, shiftk = inp.get_ngkpt_shiftk()
+        assert ngkpt is None
 
         inp.set_gamma_sampling()
         assert inp["kptopt"] == 1 and inp["nshiftk"] == 1
@@ -415,6 +430,12 @@ class TestAbinitInput(AbipyTest):
         # Validate with Abinit
         self.abivalidate_multi(ddk_inputs)
 
+        oneshot_ddk_inputs = gs_inp.make_ddk_inputs(kptopt=3, only_vk=True)
+        for inp in oneshot_ddk_inputs:
+            assert inp["kptopt"] == 3
+            assert inp["nstep"] == 1
+            assert inp["nline"] == 1
+
         #############
         # DDE methods
         #############
@@ -462,7 +483,7 @@ class TestAbinitInput(AbipyTest):
             # Validate with Abinit
             self.abivalidate_multi(dte_inputs)
 
-    def TestInputCheckSum(self):
+    def test_input_check_sum(self):
         """Testing the hash method of AbinitInput"""
         inp = ebands_input(abidata.cif_file("si.cif"), abidata.pseudos("14si.pspnc"), kppa=10, ecut=2)[0]
         inp_cs = inp.variable_checksum()
@@ -629,18 +650,6 @@ class AnaddbInputTest(AbipyTest):
              [ 0.0924795 , 0.0924795 , 0.0924795, 0.]])
         self.abivalidate_input(inp_loto)
 
-    def test_thermo(self):
-        """Testing the thermodynamics constructor"""
-        anaddb_input = AnaddbInput.thermo(self.structure, ngqpt=(40, 40, 40), nqsmall=20)
-        assert str(anaddb_input)
-        for var in ('thmtol', 'ntemper', 'temperinc', 'thmtol'):
-            assert anaddb_input[var] >= 0
-        for flag in ('ifcflag', 'thmflag'):
-            assert anaddb_input[flag] == 1
-
-        self.serialize_with_pickle(anaddb_input, test_eq=False)
-        anaddb_input.deepcopy()
-
     def test_modes(self):
         """Testing modes constructor"""
         anaddb_input = AnaddbInput.modes(self.structure)
@@ -666,12 +675,48 @@ class AnaddbInputTest(AbipyTest):
     def test_piezo_elastic(self):
         """Testing piezo_elastic constructor."""
         anaddb_input = AnaddbInput.piezo_elastic(self.structure, stress_correction=True)
-        assert anaddb_input["elaflag"] == 5 and anaddb_input["piezoflag"] == 3 and anaddb_input["asr"] == 0
+        assert anaddb_input["elaflag"] == 5 and anaddb_input["piezoflag"] == 3 and anaddb_input["asr"] == 2
+        assert anaddb_input["instrflag"] == 1 and len(anaddb_input.comment) > 0
         self.abivalidate_input(anaddb_input)
 
-        anaddb_input = AnaddbInput.piezo_elastic(self.structure, stress_correction=False)
+        anaddb_input = AnaddbInput.piezo_elastic(self.structure, stress_correction=False, asr=0)
         assert anaddb_input["elaflag"] == 3 and anaddb_input["piezoflag"] == 3 and anaddb_input["chneut"] == 1
+        assert anaddb_input["instrflag"] == 1 and anaddb_input["asr"] == 0
         self.abivalidate_input(anaddb_input)
+
+    def test_dfpt(self):
+        """Testing dfpt constructor."""
+        anaddb_input = AnaddbInput.dfpt(self.structure, stress_correction=True, relaxed_ion=True, piezo=True, dde=True,
+                                        strain=True, dte=False)
+        assert anaddb_input["elaflag"] == 5
+        assert anaddb_input["dieflag"] == 3
+        assert anaddb_input["piezoflag"] == 7
+        self.abivalidate_input(anaddb_input)
+
+        anaddb_input = AnaddbInput.dfpt(self.structure, stress_correction=True, relaxed_ion=False, piezo=True, dde=True,
+                                        strain=True, dte=False)
+        assert anaddb_input["elaflag"] == 1
+        assert anaddb_input["dieflag"] == 2
+        assert anaddb_input["piezoflag"] == 1
+        self.abivalidate_input(anaddb_input)
+
+        anaddb_input = AnaddbInput.dfpt(self.structure, stress_correction=False, relaxed_ion=True, piezo=True, dde=False,
+                                        strain=True, dte=False)
+        assert anaddb_input["elaflag"] == 3
+        assert anaddb_input["dieflag"] == 0
+        assert anaddb_input["piezoflag"] == 3
+        self.abivalidate_input(anaddb_input)
+
+        ndivsm = 1
+        nqsmall = 3
+        ngqpt = (4, 4, 4)
+        anaddb_input = AnaddbInput.dfpt(self.structure, ngqpt=ngqpt, ndivsm=ndivsm, nqsmall=nqsmall, asr=0, dos_method="tetra")
+        assert anaddb_input['ifcflag'] == 1
+        self.abivalidate_input(anaddb_input)
+
+        anaddb_input = AnaddbInput.dfpt(self.structure, dte=True)
+        assert anaddb_input['nlflag'] == 1
+        assert anaddb_input['alphon'] == 1
 
 
 class TestCut3DInput(AbipyTest):
