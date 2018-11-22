@@ -82,7 +82,7 @@ Usage example:
 `FILE` is any file supported by abipy/pymatgen e.g Netcdf files, Abinit input, POSCAR, xsf ...
 Use `-v` to increase verbosity level (can be supplied multiple times e.g -vv).
 
-File extensions supported:
+File extensions supported (including zipped files with extension in ".bz2", ".gz", ".z"):
 """
     return s + abilab.abiopen_ext2class_table()
 
@@ -192,7 +192,6 @@ def main():
                 print(abifile)
 
             if hasattr(abifile, "expose"):
-
                 abifile.expose(slide_mode=options.slide_mode, slide_timeout=options.slide_timeout,
                                verbose=options.verbose)
             else:

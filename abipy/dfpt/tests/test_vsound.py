@@ -5,7 +5,7 @@ import os
 import abipy.data as abidata
 
 from abipy.core.testing import AbipyTest
-from abipy.dfpt.phtk import SoundVelocity
+from abipy.dfpt.vsound import SoundVelocity
 
 
 class SoundVelocityTest(AbipyTest):
@@ -22,7 +22,7 @@ class SoundVelocityTest(AbipyTest):
 
         if self.has_matplotlib():
             assert sv.plot_fit_freqs_dir(0, show=False)
-            assert sv.plot_fit_freqs(0, show=False)
+            assert sv.plot(show=False)
 
         if self.has_nbformat():
             assert sv.write_notebook(nbpath=self.get_tmpname(text=True))

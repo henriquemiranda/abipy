@@ -11,6 +11,7 @@ import collections
 ### Monty import ###
 ####################
 from monty.os.path import which
+from monty.termcolor import cprint
 
 #######################
 ### Pymatgen import ###
@@ -43,6 +44,7 @@ from abipy.abio.factories import *
 from abipy.electrons.ebands import (ElectronBands, ElectronBandsPlotter, ElectronDos, ElectronDosPlotter,
     dataframe_from_ebands)
 from abipy.electrons.gsr import GsrFile, GsrRobot
+from abipy.electrons.eskw import EskwFile
 from abipy.electrons.psps import PspsFile
 from abipy.electrons.ddk import DdkFile
 from abipy.electrons.gw import SigresFile, SigresRobot
@@ -59,7 +61,7 @@ from abipy.dfpt.phonons import (PhbstFile, PhbstRobot, PhononBands, PhononBandsP
 from abipy.dfpt.ddb import DdbFile, DdbRobot
 from abipy.dfpt.anaddbnc import AnaddbNcFile, AnaddbNcRobot
 from abipy.dfpt.gruneisen import GrunsNcFile
-from abipy.dfpt.phtk import SoundVelocity
+#from abipy.dfpt.vsound import SoundVelocity
 from abipy.dynamics.hist import HistFile, HistRobot
 from abipy.waves import WfkFile
 from abipy.eph.a2f import A2fFile, A2fRobot
@@ -105,6 +107,7 @@ ext2file = collections.OrderedDict([
 # Abinit files require a special treatment.
 abiext2ncfile = collections.OrderedDict([
     ("GSR.nc", GsrFile),
+    ("ESKW.nc", EskwFile),
     ("DEN.nc", DensityNcFile),
     ("OUT.nc", OutNcFile),
     ("DDK.nc", DdkFile),
@@ -214,6 +217,21 @@ def abiopen(filepath):
     Args:
         filepath: string with the filename.
     """
+    # Handle ~ in filepath.
+    filepath = os.path.expanduser(filepath)
+
+    # Handle zipped files by creating temporary file with correct extension.
+    root, ext = os.path.splitext(filepath)
+    if ext in (".bz2", ".gz", ".z"):
+        from monty.io import zopen
+        with zopen(filepath, "rt") as f:
+            import tempfile
+            _, tmp_path = tempfile.mkstemp(suffix=os.path.basename(root), text=True)
+            cprint("Creating temporary file: %s" % tmp_path, "yellow")
+            with open(tmp_path, "wt") as t:
+                t.write(f.read())
+            filepath = tmp_path
+
     if os.path.basename(filepath) == "__AbinitFlow__.pickle":
         return Flow.pickle_load(filepath)
 
@@ -292,7 +310,7 @@ def abicheck(verbose=0):
     can be found in $PATH and whether the python modules needed
     at run-time can be imported. Return string with error messages, empty if success.
     """
-    from monty.termcolor import cprint
+
     err_lines = []
     app = err_lines.append
 
