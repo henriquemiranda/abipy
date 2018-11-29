@@ -11,6 +11,7 @@ Warning:
 import pickle
 import numpy as np
 import abipy.core.abinit_units as abu
+from itertools import product
 from monty.string import marquee
 from monty.termcolor import cprint
 from monty.dev import deprecated
@@ -250,10 +251,13 @@ class AbipyBoltztrap():
     def compute_equivalences(self):
         """Compute equivalent k-points"""
         from BoltzTraP2 import sphere
+        if duck.is_listlike(self.lpratio): nkpt = self.lpratio
+        else: nkpt = self.lpratio*self.nkpoints
         try:
-            self._equivalences = sphere.get_equivalences(self.atoms, self.magmom, self.lpratio*self.nkpoints)
+            self._equivalences = sphere.get_equivalences(self.atoms, self.magmom, nkpt)
         except TypeError:
-            self._equivalences = sphere.get_equivalences(self.atoms, self.lpratio*self.nkpoints)
+            self._equivalences = sphere.get_equivalences(self.atoms, nkpt)
+
 
     @timeit
     def compute_coefficients(self):
@@ -293,11 +297,33 @@ class AbipyBoltztrap():
             This is a small wrapper for Boltztrap2 to use the official version or a modified
             verison using gaussian or lorentzian smearing
             """
-            try:
-                return BL.BTPDOS(eband, vvband, erange=erange, npts=npts, scattering_model=scattering_model, mode=dos_method)
-            except TypeError:
-                return BL.BTPDOS(eband, vvband, erange=erange, npts=npts, scattering_model=scattering_model)
+            temp = None
+            #in case of histogram mode we read the smearing here
+            if "histogram" in mode:
+                i = mode.find(":")
+                if i != -1:
+                    value, eunit = mode[i+1:].split()
+                    if eunit == "eV": temp = float(value)*abu.eV_to_K
+                    elif eunit == "Ha": temp = float(value)*abu.Ha_to_K
+                    elif eunit == "K": temp = float(value)
+                    else: raise ValueError('Unknown unit %s'%eunit)
+                    mode = mode.split(':')[0]
 
+            try:
+                wmesh, dos_tau, vvdos_tau, _ = BL.BTPDOS(eband, vvband, erange=erange, npts=npts,
+                                                         scattering_model=scattering_model, mode=dos_method)
+            except TypeError:
+                if 'histogram' not in mode:
+                    print('Could not pass \'dos_method=%s\' argument to Bolztrap2. '
+                          'Falling back to histogram method'%dos_method)
+                wmesh, dos_tau, vvdos_tau, _ = BL.BTPDOS(eband, vvband, erange=erange, npts=npts, scattering_model=scattering_model)
+
+            if 'histogram' in mode and temp:
+                dos_tau = BL.smoothen_DOS(wmesh,dos_tau,temp)
+                for i,j in product(range(3),repeat=2):
+                    vvdos_tau[i,j] = BL.smoothen_DOS(wmesh,vvdos_tau[i,j],temp)
+
+            return wmesh, dos_tau, vvdos_tau
 
         #TODO change this!
         if erange is None: erange = (np.min(self.eig),np.max(self.eig))
@@ -311,7 +337,7 @@ class AbipyBoltztrap():
 
         #calculate DOS and VDOS without lifetimes
         if verbose: print('calculating dos and vvdos without lifetimes')
-        wmesh,dos,vvdos,_ = BTPDOS(eig_fine, vvband, erange=erange, npts=npts, mode=dos_method)
+        wmesh,dos,vvdos = BTPDOS(eig_fine, vvband, erange=erange, npts=npts, mode=dos_method)
         app(BoltztrapResult(self,wmesh,dos,vvdos,self.fermi,self.tmesh,self.volume,margin=margin))
 
         #if we have linewidths
@@ -326,7 +352,7 @@ class AbipyBoltztrap():
 
                 #calculate vvdos with the lifetimes
                 if verbose: print('calculating dos and vvdos with lifetimes')
-                wmesh, dos_tau, vvdos_tau, _ = BTPDOS(eig_fine, vvband, erange=erange, npts=npts,
+                wmesh, dos_tau, vvdos_tau = BTPDOS(eig_fine, vvband, erange=erange, npts=npts,
                                                       scattering_model=tau_fine, mode=dos_method)
                 #store results
                 app(BoltztrapResult(self,wmesh,dos_tau,vvdos_tau,self.fermi,self.tmesh,
@@ -354,7 +380,7 @@ class BoltztrapResult():
     """
     _attrs = ['_L0','_L1','_L2','_sigma','_seebeck','_kappa']
 
-    def __init__(self,abipyboltztrap,wmesh,dos,vvdos,fermi,tmesh,volume,tau_temp=None,margin=0.1):
+    def __init__(self,abipyboltztrap,wmesh,dos,vvdos,fermi,tmesh,volume,tau_temp=None,nsppol=1,margin=0.1):
         self.abipyboltztrap = abipyboltztrap
 
         self.fermi  = fermi
@@ -363,6 +389,7 @@ class BoltztrapResult():
         idx_margin = int(margin*len(wmesh))
         self.mumesh = self.wmesh[idx_margin:-(idx_margin+1)]
         self.tmesh  = np.array(tmesh)
+        self.nsppol = nsppol
 
         #Temperature fix
         if any(self.tmesh < 1):
@@ -374,6 +401,18 @@ class BoltztrapResult():
 
         self.dos = dos
         self.vvdos = vvdos
+
+    @property
+    def minw(self):
+        return np.min(self.wmesh)
+
+    @property
+    def maxw(self):
+        return np.max(self.wmesh)
+
+    @property
+    def spin_degen(self):
+        return {1:2,2:1}[self.nsppol]
 
     @property
     def has_tau(self):
@@ -423,9 +462,11 @@ class BoltztrapResult():
             self.compute_onsager_coefficients()
         return self._kappa
 
-    def set_tmesh(self,tmesh):
-        """ Set the temperature mesh"""
-        self.tmesh = tmesh
+    def get_fermi(self,nelectrons,temperature,refine=False):
+        """ Compute the fermi energy given the number of electrons and temperature of the system """
+        import BoltzTraP2.bandlib as BL
+        dosweights = self.spin_degen()
+        return BL.solve_for_mu(self.wmesh,self.dos,T=temperature,refine=refine)
 
     def set_tmesh(self,tmesh):
         """ Set the temperature mesh"""
@@ -434,19 +475,28 @@ class BoltztrapResult():
     def del_attrs(self):
         """ Remove all the atributes so they are recomputed """
         for attr in self._attrs:
-            delattr(attr)
+            if hasattr(self,attr): delattr(self,attr)
 
-    def set_mumesh(self,emin,emax):
+    def set_tmesh(self,tmesh):
+        """ Set the temperature mesh"""
+        self.tmesh = tmesh
+        self.del_attrs()
+
+    def set_mumesh(self,mumesh):
         """
         Set the range in which to plot the change of the doping
 
         Args:
-            emin: minimun energy in eV
-            emax: maximum energy in eV
+            mumesh: an array with the list of fermi energies (in eV) at which the transport quantities should be computed
         """
-        start_idx = np.abs(self.wmesh - emin*abu.eV_Ha - self.fermi).argmin()
-        stop_idx  = np.abs(self.wmesh - emax*abu.eV_Ha - self.fermi).argmin()
-        self.mumesh = self.wmesh[start_idx:stop_idx]
+        mumesh = mumesh * abu.eV_Ha + self.fermi
+        if not duck.is_listlike(mumesh): raise ValueError('The input mumesh must be a list')
+        min_mumesh = np.min(mumesh)
+        max_mumesh = np.max(mumesh)
+        if min_mumesh < self.minw: raise ValueError('The minimum of the input mu mesh is lower than the energies mesh in DOS')
+        if max_mumesh > self.maxw: raise ValueError('The maximum of the input mu mesh is higher than the energies mesh in DOS')
+        self.mumesh = mumesh
+        self.del_attrs()
 
     def compute_fermiintegrals(self):
         """Compute and store the results of the Fermi integrals"""
@@ -538,11 +588,11 @@ class BoltztrapResult():
         mumesh = (self.mumesh-self.fermi) * abu.Ha_eV
 
         if self.istensor(what):
-            kwargs.pop('c',None)
+            color = kwargs.pop('c',None)
             for itemp in itemp_list:
                 for component in components:
                     y = self.get_component(what,component,itemp)
-                    if len(itemp_list) > 1: color=cmap(itemp/len(itemp_list))
+                    if ((len(itemp_list) > 1) and color == None): color=cmap(itemp/len(itemp_list))
                     label = "%s $_{%s}$ $b_T$ = %dK" % (self.get_letter(what),component,self.tmesh[itemp])
                     if self.has_tau: label += r" $\tau_T$ = %dK" % self.tau_temp
                     ax.plot(mumesh,y,label=label,c=color,**kwargs)
@@ -843,17 +893,16 @@ class BoltztrapResultRobot():
             app(result.to_string(mark='-'))
         return "\n".join(lines)
 
-    def set_mumesh(self,emin,emax):
+    def set_mumesh(self,mumesh):
         """
         Set the range in which to plot the change of the doping
         for all the results
 
         Args:
-            emin: minimun energy in eV
-            emax: maximum energy in eV
+            mumesh: an array with the list of fermi energies (in eV) at which the transport quantities should be computed
         """
         for result in self.results:
-            result.set_mumesh(emin,emax)
+            result.set_mumesh(mumesh)
 
     def set_tmesh(self,tmesh):
         """
