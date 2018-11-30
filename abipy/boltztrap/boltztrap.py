@@ -338,7 +338,7 @@ class AbipyBoltztrap():
         #calculate DOS and VDOS without lifetimes
         if verbose: print('calculating dos and vvdos without lifetimes')
         wmesh,dos,vvdos = BTPDOS(eig_fine, vvband, erange=erange, npts=npts, mode=dos_method)
-        app(BoltztrapResult(self,wmesh,dos,vvdos,self.fermi,self.tmesh,self.volume,margin=margin))
+        app(BoltztrapResult(wmesh,dos,vvdos,self.fermi,self.tmesh,self.volume,margin=margin))
 
         #if we have linewidths
         if self.linewidths:
@@ -355,7 +355,7 @@ class AbipyBoltztrap():
                 wmesh, dos_tau, vvdos_tau = BTPDOS(eig_fine, vvband, erange=erange, npts=npts,
                                                       scattering_model=tau_fine, mode=dos_method)
                 #store results
-                app(BoltztrapResult(self,wmesh,dos_tau,vvdos_tau,self.fermi,self.tmesh,
+                app(BoltztrapResult(wmesh,dos_tau,vvdos_tau,self.fermi,self.tmesh,
                                     self.volume,tau_temp=self.tmesh[itemp],margin=margin))
 
         return BoltztrapResultRobot(boltztrap_results)
@@ -380,8 +380,7 @@ class BoltztrapResult():
     """
     _attrs = ['_L0','_L1','_L2','_sigma','_seebeck','_kappa']
 
-    def __init__(self,abipyboltztrap,wmesh,dos,vvdos,fermi,tmesh,volume,tau_temp=None,nsppol=1,margin=0.1):
-        self.abipyboltztrap = abipyboltztrap
+    def __init__(self,wmesh,dos,vvdos,fermi,tmesh,volume,tau_temp=None,nsppol=1,margin=0.1):
 
         self.fermi  = fermi
         self.volume = volume
@@ -401,6 +400,26 @@ class BoltztrapResult():
 
         self.dos = dos
         self.vvdos = vvdos
+
+    @classmethod
+    def from_evk(cls,filename,tmesh):
+        """
+        Initialize the class from an EVK file containing the dos and vvdos computed by abinit
+        """
+        from abipy.electrons.ddk import EvkReader
+        reader = EvkReader(filename)
+        wmesh, dos, idos = reader.read_dos()
+        wmesh, vvdos, ivvdos = reader.read_vvdos()
+
+        ebands = reader.read_ebands()
+        fermi = ebands.fermie*abu.eV_Ha
+        nsppol = ebands.nsppol
+        volume = ebands.structure.volume*abu.Ang_Bohr**3
+
+        #todo spin
+        dos = dos[0]
+        vvdos = vvdos[:,:,0]
+        return cls(wmesh,dos,vvdos,fermi,tmesh,volume,tau_temp=None,nsppol=1,margin=0.1)
 
     @property
     def minw(self):
@@ -578,6 +597,12 @@ class BoltztrapResult():
         colormap = kwargs.pop('colormap','plasma')
         cmap = plt.get_cmap(colormap)
         color = None
+        if what == 'dos': 
+            self.plot_dos_ax(ax,**kwargs)
+            return
+        if what == 'vvdos':
+            self.plot_vvdos_ax(ax,components=components,**kwargs)
+            return
 
         itemp_list = list(range(self.ntemp)) if itemp_list is None else duck.list_ints(itemp_list)
         maxitemp = max(itemp_list)

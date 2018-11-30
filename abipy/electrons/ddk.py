@@ -296,3 +296,58 @@ class DdkReader(ElectronsReader):
 
     def read_ddk_skbb(self):
         return self.read_value("h1_matrix", cplx_mode="cplx") * (units.Ha_to_eV / units.bohr_to_ang)
+
+
+
+class EvkReader(ElectronsReader):
+    """
+    This object reads the results stored in the EVK.nc file
+    It provides helper function to access the most important quantities.
+    """
+    def __init__(self, filepath):
+        super(EvkReader, self).__init__(filepath)
+        nband_sk = self.read_nband_sk()
+        if np.any(nband_sk != nband_sk[0, 0]):
+            raise NotImplementedError("Found different number of bands per k-point, spin.\nnband_sk: %s\n" %
+                    str(nband_sk))
+        self.mband = nband_sk[0, 0]
+
+    def read_vvdos(self):
+        """
+        Read the group velocity density of states
+        The vvdos_vals array has three dimensions (9,nsppolplus1,nw)
+          1. 3x3 components of the tensor
+          3. the spin polarization + 1 for the sum
+          4. the number of frequencies
+        """
+        wmesh = self.read_variable("vvdos_mesh")
+
+        vals = self.read_variable("vvdos_vals")
+        nsppol = vals.shape[1]-1
+        vvdos = vals[:,1:,:].reshape((3,3,nsppol,-1))
+        vals = self.read_variable("vvidos_vals")
+        ivvdos = vals[:,1:,:].reshape((3,3,nsppol,-1))
+        return wmesh, vvdos, ivvdos
+
+    def read_dos(self):
+        """
+        Read the density of states
+        """
+        wmesh = self.read_variable("edos_mesh")
+        vals = self.read_variable("edos_dos")
+        dos = vals[1:,:]
+        vals = self.read_variable("edos_idos")
+        idos = vals[1:,:]
+        return wmesh, dos, idos
+
+    def read_evk_diagonal(self):
+        """
+        Read the group velocities i.e the diagonal matrix elements.
+        Return (nsppol, nkpt) |numpy-array| of real numbers.
+        """
+        vels = self.read_variable("vred_diagonal")
+        # Cartesian? Ha --> eV?
+        return vels * (units.Ha_to_eV / units.bohr_to_ang)
+
+    def read_evk_skbb(self):
+        return self.read_value("h1_matrix", cplx_mode="cplx") * (units.Ha_to_eV / units.bohr_to_ang)
