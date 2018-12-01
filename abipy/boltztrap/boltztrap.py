@@ -10,8 +10,11 @@ Warning:
 """
 import pickle
 import numpy as np
+import pandas as pd
 import abipy.core.abinit_units as abu
 from itertools import product
+from collections import OrderedDict
+
 from monty.string import marquee
 from monty.termcolor import cprint
 from monty.dev import deprecated
@@ -379,6 +382,7 @@ class BoltztrapResult():
     for plotting, storing and analysing the results
     """
     _attrs = ['_L0','_L1','_L2','_sigma','_seebeck','_kappa']
+    _properties = ['sigma','seebeck','kappa','powerfactor','L0','L1','L2']
 
     def __init__(self,wmesh,dos,vvdos,fermi,tmesh,volume,tau_temp=None,nsppol=1,margin=0.1):
 
@@ -481,34 +485,62 @@ class BoltztrapResult():
             self.compute_onsager_coefficients()
         return self._kappa
 
-    def get_fermi(self,nelectrons,temperature,refine=False):
-        """ Compute the fermi energy given the number of electrons and temperature of the system """
-        import BoltzTraP2.bandlib as BL
-        dosweights = self.spin_degen()
-        return BL.solve_for_mu(self.wmesh,self.dos,T=temperature,refine=refine)
-
     def set_tmesh(self,tmesh):
         """ Set the temperature mesh"""
         self.tmesh = tmesh
 
     def del_attrs(self):
-        """ Remove all the atributes so they are recomputed """
+        """ Remove all the atributes so they are recomputed when requested """
         for attr in self._attrs:
             if hasattr(self,attr): delattr(self,attr)
 
     def set_tmesh(self,tmesh):
-        """ Set the temperature mesh"""
+        """
+        Set the temperature mesh in K
+
+        Args:
+            tmesh: a list of temperatures in K
+        """
         self.tmesh = tmesh
         self.del_attrs()
 
+    def set_nmesh(self,nmesh,refine=False):
+        """
+        Set the mumesh using a list of carrier concentrations n
+
+        Args:
+            carriermesh: a list of carrier concentrarions in units of electrons/cm^3
+        """
+        nelectronsmesh = []
+        for n in carriermesh:
+            # (n e)/cm^3 -> 1e-24 * (n e)/A^3
+            # n: carrier concentration
+            # electron: e
+            nelectrons =  1e-24 * n * self.volume
+            nelectronsmesh.append(nelectrons)
+        self.set_nelectronmesh(nelectronsmesh,refine=refine)
+
+    def set_nelectronsmesh(self,nelectronsmesh,refine=False):
+        """
+        Set the mumesh mesh by specfying a list of the number of electrons in the system
+
+        Args:
+            nelectronsmesh: a list of number of electrons to compute mu with
+        """
+        mumesh = []
+        for nelectrons in nelectronsmesh:
+            mu = self.compute_fermi(nelectrons,self.tmesh,refine=refine)
+            mumesh.append(mu)
+        self.set_mumesh(mumesh)
+
     def set_mumesh(self,mumesh):
         """
-        Set the range in which to plot the change of the doping
+        Set a list of mu at which to compute the transport properties
 
         Args:
             mumesh: an array with the list of fermi energies (in eV) at which the transport quantities should be computed
         """
-        mumesh = mumesh * abu.eV_Ha + self.fermi
+        mumesh = np.array(mumesh) * abu.eV_Ha + self.fermi
         if not duck.is_listlike(mumesh): raise ValueError('The input mumesh must be a list')
         min_mumesh = np.min(mumesh)
         max_mumesh = np.max(mumesh)
@@ -516,6 +548,12 @@ class BoltztrapResult():
         if max_mumesh > self.maxw: raise ValueError('The maximum of the input mu mesh is higher than the energies mesh in DOS')
         self.mumesh = mumesh
         self.del_attrs()
+
+    def compute_fermi(self,nelectrons,temperature,refine=False):
+        """ Compute the fermi energy given the number of electrons and temperature of the system """
+        import BoltzTraP2.bandlib as BL
+        dosweights = self.spin_degen()
+        return BL.solve_for_mu(self.wmesh,self.dos,nelectrons,T=temperature,refine=refine)
 
     def compute_fermiintegrals(self):
         """Compute and store the results of the Fermi integrals"""
@@ -538,14 +576,48 @@ class BoltztrapResult():
         return instance
 
     def pickle(self,filename):
-        """Write a file with the results from the calculation"""
+        """ Write a file with the results from the calculation """
         with open(filename,'wb') as f:
             pickle.dump(self,f)
 
     def istensor(self,what):
-        """Check if a certain quantity is a tensor"""
+        """ Check if a certain quantity is a tensor """
         if not hasattr(self,what): return None
         return len(getattr(self,what).shape) > 2
+
+    def deepcopy(self):
+        """ Return a copy of this class """
+        import copy
+        return copy.deepcopy(self)
+
+    def get_dataframe(self,components=('xx',),index=None):
+        """
+        Get a pandas dataframe with the results
+
+        Args:
+            mumesh: Set a certain mumesh before returning the dataframe
+            tmesh:
+        """
+        records = []
+        for component in components:
+            for itemp,temp in enumerate(self.tmesh):
+                for imu,mu in enumerate(self.mumesh):
+                    od = OrderedDict()
+                    od['T'] = temp
+                    od['mu'] = mu
+                    od['component'] = component
+                    for what in self._properties:
+                        ylist = self.get_component(what,component,itemp)
+                        od[what] = ylist[imu]
+                    records.append(od)
+        return pd.DataFrame.from_records(records, index=index)
+
+    def get_dataframe_fermi(self,index=None):
+        """ Get dataframe for a single mu that corresponds to the Fermi energy
+        """
+        btr = self.deepcopy()
+        btr.set_mumesh([self.fermi])
+        return btr.get_dataframe(index=index)
 
     def get_component(self,what,component,itemp):
         i,j = abu.s2itup(component)
@@ -597,7 +669,7 @@ class BoltztrapResult():
         colormap = kwargs.pop('colormap','plasma')
         cmap = plt.get_cmap(colormap)
         color = None
-        if what == 'dos': 
+        if what == 'dos':
             self.plot_dos_ax(ax,**kwargs)
             return
         if what == 'vvdos':
@@ -906,6 +978,24 @@ class BoltztrapResultRobot():
     def unset_erange(self):
         """ Unset the energy range"""
         self.erange = None
+
+    def get_dataframe(self,index=None):
+        """
+        Get a pandas dataframe from all the results in this Robot
+        """
+        df_list = []; app = df_list.append
+        for result in self.results:
+            app(result.get_dataframe(index=index))
+        return pd.concat(df_list)
+
+    def get_dataframe_fermi(self,index=None):
+        """
+        Get a pandas dataframe from all the results in this Robot at the Fermi energy
+        """
+        df_list = []; app = df_list.append
+        for result in self.results:
+            app(result.get_dataframe_fermi(index=index))
+        return pd.concat(df_list)
 
     def to_string(self, verbose=0):
         """
