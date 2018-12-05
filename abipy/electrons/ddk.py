@@ -320,20 +320,21 @@ class EvkReader(ElectronsReader):
           3. the spin polarization + 1 for the sum
           4. the number of frequencies
         """
-        wmesh = self.read_variable("vvdos_mesh")
-
+        vals = self.read_variable("vvdos_mesh")
+        wmesh = vals[:]
         vals = self.read_variable("vvdos_vals")
         nsppol = vals.shape[1]-1
         vvdos = vals[:,1:,:].reshape((3,3,nsppol,-1))
-        vals = self.read_variable("vvidos_vals")
-        ivvdos = vals[:,1:,:].reshape((3,3,nsppol,-1))
-        return wmesh, vvdos, ivvdos
+        #vals = self.read_variable("vvidos_vals")
+        #ivvdos = vals[:,1:,:].reshape((3,3,nsppol,-1))
+        return wmesh, vvdos
 
     def read_dos(self):
         """
         Read the density of states
         """
-        wmesh = self.read_variable("edos_mesh")
+        vals = self.read_variable("edos_mesh")
+        wmesh = vals[:]
         vals = self.read_variable("edos_dos")
         dos = vals[1:,:]
         vals = self.read_variable("edos_idos")

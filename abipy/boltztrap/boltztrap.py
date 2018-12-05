@@ -329,7 +329,7 @@ class AbipyBoltztrap():
             return wmesh, dos_tau, vvdos_tau
 
         #TODO change this!
-        if erange is None: erange = (np.min(self.eig),np.max(self.eig))
+        if erange is None: erange = (np.min(self.eig)-margin,np.max(self.eig)+margin)
         else: erange = np.array(erange)/abu.Ha_eV+self.fermi
 
         #interpolate the electronic structure
@@ -341,7 +341,7 @@ class AbipyBoltztrap():
         #calculate DOS and VDOS without lifetimes
         if verbose: print('calculating dos and vvdos without lifetimes')
         wmesh,dos,vvdos = BTPDOS(eig_fine, vvband, erange=erange, npts=npts, mode=dos_method)
-        app(BoltztrapResult(wmesh,dos,vvdos,self.fermi,self.tmesh,self.volume,margin=margin))
+        app(BoltztrapResult(wmesh,dos,vvdos,self.fermi,self.tmesh,self.volume,self.nelect,margin=margin))
 
         #if we have linewidths
         if self.linewidths:
@@ -359,7 +359,7 @@ class AbipyBoltztrap():
                                                       scattering_model=tau_fine, mode=dos_method)
                 #store results
                 app(BoltztrapResult(wmesh,dos_tau,vvdos_tau,self.fermi,self.tmesh,
-                                    self.volume,tau_temp=self.tmesh[itemp],margin=margin))
+                                    self.volume,self.nelect,tau_temp=self.tmesh[itemp],margin=margin))
 
         return BoltztrapResultRobot(boltztrap_results)
 
@@ -384,15 +384,16 @@ class BoltztrapResult():
     _attrs = ['_L0','_L1','_L2','_sigma','_seebeck','_kappa']
     _properties = ['sigma','seebeck','kappa','powerfactor','L0','L1','L2']
 
-    def __init__(self,wmesh,dos,vvdos,fermi,tmesh,volume,tau_temp=None,nsppol=1,margin=0.1):
+    def __init__(self,wmesh,dos,vvdos,fermi,tmesh,volume,nelect,tau_temp=None,nsppol=1,margin=0.1):
 
         self.fermi  = fermi
         self.volume = volume
         self.wmesh  = np.array(wmesh)
-        idx_margin = int(margin*len(wmesh))
+        idx_margin  = int(margin*len(wmesh))
         self.mumesh = self.wmesh[idx_margin:-(idx_margin+1)]
         self.tmesh  = np.array(tmesh)
         self.nsppol = nsppol
+        self.nelect = nelect
 
         #Temperature fix
         if any(self.tmesh < 1):
@@ -413,17 +414,18 @@ class BoltztrapResult():
         from abipy.electrons.ddk import EvkReader
         reader = EvkReader(filename)
         wmesh, dos, idos = reader.read_dos()
-        wmesh, vvdos, ivvdos = reader.read_vvdos()
+        wmesh, vvdos = reader.read_vvdos()
 
         ebands = reader.read_ebands()
         fermi = ebands.fermie*abu.eV_Ha
         nsppol = ebands.nsppol
         volume = ebands.structure.volume*abu.Ang_Bohr**3
+        nelect = ebands.nelect
 
         #todo spin
         dos = dos[0]
         vvdos = vvdos[:,:,0]
-        return cls(wmesh,dos,vvdos,fermi,tmesh,volume,tau_temp=None,nsppol=1,margin=0.1)
+        return cls(wmesh,dos,vvdos,fermi,tmesh,volume,nelect,tau_temp=None,nsppol=1,margin=0.1)
 
     @property
     def minw(self):
@@ -485,10 +487,6 @@ class BoltztrapResult():
             self.compute_onsager_coefficients()
         return self._kappa
 
-    def set_tmesh(self,tmesh):
-        """ Set the temperature mesh"""
-        self.tmesh = tmesh
-
     def del_attrs(self):
         """ Remove all the atributes so they are recomputed when requested """
         for attr in self._attrs:
@@ -504,23 +502,26 @@ class BoltztrapResult():
         self.tmesh = tmesh
         self.del_attrs()
 
-    def set_nmesh(self,nmesh,refine=False):
+    def set_nmesh(self,nmesh,temperature,mode="boltztrap:refine"):
         """
         Set the mumesh using a list of carrier concentrations n
 
         Args:
-            carriermesh: a list of carrier concentrarions in units of electrons/cm^3
+            nmesh: a list of carrier concentrarions in units of electrons/cm^3
         """
+        self.tmesh = np.array([temperature])
+        n0 = self.compute_nelectrons(self.fermi*abu.Ha_eV,temperature,mode=mode)
         nelectronsmesh = []
-        for n in carriermesh:
+        for n in nmesh:
             # (n e)/cm^3 -> 1e-24 * (n e)/A^3
             # n: carrier concentration
             # electron: e
-            nelectrons =  1e-24 * n * self.volume
+            nelectrons = n0 + 1e-24 * n * self.volume
             nelectronsmesh.append(nelectrons)
-        self.set_nelectronmesh(nelectronsmesh,refine=refine)
+        self.set_nelectronmesh(nelectronsmesh,mode=mode)
+        return nelectronsmesh
 
-    def set_nelectronsmesh(self,nelectronsmesh,refine=False):
+    def set_nelectronmesh(self,nelectronsmesh,mode="boltztrap:refine"):
         """
         Set the mumesh mesh by specfying a list of the number of electrons in the system
 
@@ -529,9 +530,10 @@ class BoltztrapResult():
         """
         mumesh = []
         for nelectrons in nelectronsmesh:
-            mu = self.compute_fermi(nelectrons,self.tmesh,refine=refine)
+            temperature=300
+            mu = self.compute_fermi(nelectrons,temperature,mode=mode)
             mumesh.append(mu)
-        self.set_mumesh(mumesh)
+        self.set_mumesh(np.array(mumesh)*abu.Ha_eV)
 
     def set_mumesh(self,mumesh):
         """
@@ -549,11 +551,40 @@ class BoltztrapResult():
         self.mumesh = mumesh
         self.del_attrs()
 
-    def compute_fermi(self,nelectrons,temperature,refine=False):
-        """ Compute the fermi energy given the number of electrons and temperature of the system """
-        import BoltzTraP2.bandlib as BL
-        dosweights = self.spin_degen()
-        return BL.solve_for_mu(self.wmesh,self.dos,nelectrons,T=temperature,refine=refine)
+    def compute_nelectrons(self,mu,temperature,mode="boltztrap"):
+        """
+        Compute the number of electrons given a temperature and chemical potential
+
+        Args:
+            mu: value of the chemical potential with respect to the Fermi level (eV)
+            temperature: temperature for the Fermi-Dirac distrubution
+        """
+        if "boltztrap" in mode:
+            import BoltzTraP2.bandlib as BL
+            nelectrons = -BL.calc_N(self.wmesh,self.dos,mu*abu.eV_Ha,T=temperature,dosweight=self.spin_degen)
+            return nelectrons
+        else:
+            from abipy.core.func1d import Function1D
+            from BoltzTraP2.fd import FD
+            occ = FD(self.wmesh,mu*abu.eV_Ha,temperature*abu.kb_HaK)
+            func1d = Function1D.from_constant(self.wmesh,self.dos*self.spin_degen*occ)
+            nelectrons = func1d.spline.integral(a=self.minw,b=mu*abu.eV_Ha)
+            return nelectrons
+
+    def compute_fermi(self,nelectrons,temperature,mode="boltztrap:refine"):
+        """
+        Compute the Fermi energy given the number of electrons and temperature of the system
+        """
+        if "boltztrap" in mode:
+            import BoltzTraP2.bandlib as BL
+            refine = "refine" in mode
+            mu = BL.solve_for_mu(self.wmesh,self.dos,nelectrons,T=temperature,dosweight=self.spin_degen,refine=refine)
+            return mu - self.fermi
+        else:
+            from scipy.optimize import bisect
+            def f(x): return self.compute_nelectrons(x*abu.Ha_eV,temperature)-nelectrons
+            mu = bisect(f,a=self.minw,b=self.maxw)
+            return mu - self.fermi
 
     def compute_fermiintegrals(self):
         """Compute and store the results of the Fermi integrals"""
@@ -604,7 +635,7 @@ class BoltztrapResult():
                 for imu,mu in enumerate(self.mumesh):
                     od = OrderedDict()
                     od['T'] = temp
-                    od['mu'] = mu
+                    od['mu'] = (mu-self.fermi)*abu.Ha_eV
                     od['component'] = component
                     for what in self._properties:
                         ylist = self.get_component(what,component,itemp)
@@ -623,19 +654,28 @@ class BoltztrapResult():
         i,j = abu.s2itup(component)
         return getattr(self,what)[itemp,:,i,j]
 
-    def plot_dos_ax(self,ax,fontsize=8,**kwargs):
+    def plot_mumesh_ax(self,ax):
+        """
+        Plot the different values of mu in the ax as vrtical lines
+        """
+        for mu in self.mumesh:
+            ax.axvline((mu-self.fermi)*abu.Ha_eV)
+
+    def plot_dos_ax(self,ax,fontsize=8,show_fermi=False,**kwargs):
         """
         Plot the density of states on axis ax.
 
         Args:
             ax: |matplotlib-Axes|.
             kwargs: Passed to ax.plot
+            fermi: Choose
         """
         wmesh = (self.wmesh-self.fermi) * abu.Ha_eV
         ax.plot(wmesh,self.dos,label=self.get_letter('dos'),**kwargs)
         ax.set_xlabel('Energy (eV)',fontsize=fontsize)
+        if show_fermi: ax.axvline(self.fermi)
 
-    def plot_vvdos_ax(self,ax,components=('xx',),fontsize=8,**kwargs):
+    def plot_vvdos_ax(self,ax,components=('xx',),fontsize=8,show_fermi=False,**kwargs):
         """
         Plot components of vvdos on the axis ax.
 
@@ -652,6 +692,7 @@ class BoltztrapResult():
             if self.tau_temp: label += r" $\tau_T$ = %dK" % self.tau_temp
             ax.plot(wmesh,self.vvdos[i,j,:],label=label,**kwargs)
         ax.set_xlabel('Energy (eV)',fontsize=fontsize)
+        if show_fermi: ax.axvline(self.fermi)
 
     def plot_ax(self, ax, what, components=('xx',), itemp_list=None, fontsize=8, **kwargs):
         """
@@ -721,12 +762,12 @@ class BoltztrapResult():
         return letters[what]
 
     @add_fig_kwargs
-    def plot(self, what, colormap='plasma', directions=('xx'), ax=None, fontsize=8, **kwargs):
+    def plot(self, what, colormap='plasma', components=('xx',), ax=None, fontsize=8, **kwargs):
         """
         Plot the qantity for all the temperatures as a function of the doping
         """
         ax, fig, plt = get_ax_fig_plt(ax=ax)
-        self.plot_ax(ax, what, colormap=colormap, directions=directions, **kwargs)
+        self.plot_ax(ax, what, colormap=colormap, components=components, **kwargs)
         ax.legend(loc="best", shadow=True, fontsize=fontsize)
         return fig
 
@@ -1007,6 +1048,17 @@ class BoltztrapResultRobot():
         for result in self.results:
             app(result.to_string(mark='-'))
         return "\n".join(lines)
+
+    def set_nmesh(self,nmesh,mode="boltztrap:refine"):
+        """
+        Set the range in which to plot the change of the doping
+        for all the results
+
+        Args:
+            mumesh: an array with the list of fermi energies (in eV) at which the transport quantities should be computed
+        """
+        for result in self.results:
+            result.set_nmesh(nmesh,mode=mode)
 
     def set_mumesh(self,mumesh):
         """
