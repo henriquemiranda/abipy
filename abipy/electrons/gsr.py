@@ -139,6 +139,28 @@ class GsrFile(AbinitNcFile, Has_Header, Has_Structure, Has_ElectronBands, Notebo
         return self.reader.read_cart_forces()
 
     @lazy_property
+    def cart_electronic_polarization(self):
+        """Electronic polarization in e / Ang^2 """
+        return self.get_cart_electronic_polarization()
+
+    @lazy_property
+    def cart_ionic_polarization(self):
+        """Ionic polarization in e / Ang^2 """
+        return self.get_cart_ionic_polarization()
+
+    def get_cart_electronic_polarization(self,unit='e ang^-2'):
+        """Electronic polarization in e / Ang^2 """
+        red = self.reader.read_reduced_electronic_polarization()
+        car = self.structure.lattice.get_cartesian_coords(red) / self.structure.volume
+        return ArrayWithUnit(car,'e ang^-2').to(unit)
+
+    def get_cart_ionic_polarization(self,unit='e ang^-2'):
+        """Ionic polarization in e / Ang^2 """
+        red = self.reader.read_reduced_ionic_polarization()
+        car = self.structure.lattice.get_cartesian_coords(red) / self.structure.volume
+        return ArrayWithUnit(car,'e ang^-2').to(unit)
+
+    @lazy_property
     def max_force(self):
         fmods = np.sqrt([np.dot(force, force) for force in self.cart_forces])
         return fmods.max()
@@ -351,6 +373,20 @@ class GsrReader(ElectronsReader):
         Shape (natom, 3)
         """
         return ArrayWithUnit(self.read_value("cartesian_forces"), "Ha bohr^-1").to(unit)
+
+    def read_reduced_ionic_polarization(self):
+        """
+        Read and return a |numpy-array| with the reduced ionic polarization in unit ``unit``.
+        Shape (3)
+        """
+        return self.read_value("reduced_ionic_polarization")
+
+    def read_reduced_electronic_polarization(self):
+        """
+        Read and return a |numpy-array| with the reduced electronic polarization in unit ``unit``.
+        Shape (3)
+        """
+        return self.read_value("reduced_electronic_polarization")
 
     def read_cart_stress_tensor(self):
         """
