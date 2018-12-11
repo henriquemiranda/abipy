@@ -379,6 +379,8 @@ class GsrReader(ElectronsReader):
         Read and return a |numpy-array| with the reduced ionic polarization in unit ``unit``.
         Shape (3)
         """
+        if "reduced_ionic_polarization" not in self.rootgrp.variables:
+            raise RuntimeError("The 'reduced_ionic_polarization' variable requires berryopt != 0 in the input file and Abinit9")
         return self.read_value("reduced_ionic_polarization")
 
     def read_reduced_electronic_polarization(self):
@@ -386,6 +388,8 @@ class GsrReader(ElectronsReader):
         Read and return a |numpy-array| with the reduced electronic polarization in unit ``unit``.
         Shape (3)
         """
+        if "reduced_electronic_polarization" not in self.rootgrp.variables:
+            raise RuntimeError("The 'reduced_electronic_polarization' variable requires berryopt != 0 in the input file and Abinit9")
         return self.read_value("reduced_electronic_polarization")
 
     def read_cart_stress_tensor(self):
