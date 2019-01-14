@@ -165,7 +165,7 @@ class AbipyBoltztrap():
             tmesh.append(sigeph.tmesh[itemp])
             fermi = sigeph.mu_e[itemp]*abu.eV_Ha
             #TODO handle spin
-            linewidth = qpes[0, :, bstart:bstop, itemp].imag.T*abu.eV_Ha
+            linewidth = qpes[0,:,bstart:bstop,itemp].imag.T*abu.eV_Ha
             linewidths.append(linewidth)
 
         return cls(fermi, structure, nelect, kpoints, eig, volume, linewidths=linewidths,
@@ -350,7 +350,7 @@ class AbipyBoltztrap():
                 #calculate the lifetimes on the fine grid
                 results = fite.getBTPbands(self.equivalences, self._linewidth_coefficients[itemp],
                                            self.lattvec, nworkers=nworkers)
-                linewidth_fine, vvband, cband = results
+                linewidth_fine, vvband_, cband_ = results
                 tau_fine = 1.0/np.abs(2*linewidth_fine*abu.eV_s)
 
                 #calculate vvdos with the lifetimes
@@ -407,14 +407,23 @@ class BoltztrapResult():
         self.vvdos = vvdos
 
     @classmethod
-    def from_evk(cls,filename,tmesh):
+    def from_evk(cls,filename,itemp=None,tmesh=None):
         """
         Initialize the class from an EVK file containing the dos and vvdos computed by abinit
         """
         from abipy.electrons.ddk import EvkReader
         reader = EvkReader(filename)
         wmesh, dos, idos = reader.read_dos()
-        wmesh, vvdos = reader.read_vvdos()
+
+        if itemp:
+            wmesh, vvdos_tau = reader.read_vvdos_tau()
+            vvdos = vvdos_tau[itemp]
+        else:
+            wmesh, vvdos = reader.read_vvdos()
+
+        if tmesh is None:
+          ktmesh = reader.read_value("kTmesh")
+          tmesh = ktmesh / abu.kb_HaK
 
         ebands = reader.read_ebands()
         fermi = ebands.fermie*abu.eV_Ha
