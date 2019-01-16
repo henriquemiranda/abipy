@@ -7,7 +7,7 @@ import numpy as np
 import abipy.data as abidata
 
 from abipy.core.testing import AbipyTest
-from abipy.boltztrap import AbipyBoltztrap, BoltztrapResult
+from abipy.transport import AbipyBoltztrap, TransportResult
 from abipy import abilab
 
 
@@ -44,7 +44,7 @@ class AbipyBoltztrapTest(AbipyTest):
         # Test pickle
         pickle_file = self.get_tmpname(suffix="diamond.npy")
         btr.pickle(pickle_file)
-        same_result = BoltztrapResult.from_pickle(pickle_file)
+        same_result = TransportResult.from_pickle(pickle_file)
         self.assert_equal(btr.tmesh, same_result.tmesh)
 
         if self.has_matplotlib():
