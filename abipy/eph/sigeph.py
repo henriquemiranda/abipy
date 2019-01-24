@@ -46,7 +46,7 @@ __all__ = [
 # __eq__ based on skb?
 # broadening, adiabatic ??
 
-class QpTempState(namedtuple("QpTempState", "spin kpoint band tmesh e0 qpe ze0 fan0 dw qpe_oms")):
+class QpTempState(namedtuple("QpTempState", "spin kpoint band tmesh e0 qpe ze0 fan0 taumrta dw qpe_oms")):
     """
     Quasi-particle result for given (spin, kpoint, band).
 
@@ -2922,6 +2922,10 @@ class SigmaPhReader(BaseEphReader):
         sigc = (var[spin, ikc, ibc, :, 0] + 1j * var[spin, ikc, ibc, :, 1]) * abu.Ha_eV
         fan0 = sigc - dw
 
+        # Read tau in the momentum relaxation time approximation
+        var = self.read_variable("tau_mrta")
+        taumrta = var[spin, ikc, ibc, :]
+
         # nctkarr_t("ks_enes", "dp", "max_nbcalc, nkcalc, nsppol")
         e0 = self.read_variable("ks_enes")[spin, ikc, ibc] * abu.Ha_eV
 
@@ -2937,6 +2941,7 @@ class SigmaPhReader(BaseEphReader):
             qpe=ri(qpe),
             ze0=ze0,
             fan0=ri(fan0),
+            taumrta=taumrta,
             dw=dw,
             qpe_oms=qpe_oms,
         )

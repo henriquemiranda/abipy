@@ -50,12 +50,13 @@ class TransportFile(AbinitNcFile, Has_Header, Has_Structure, Has_ElectronBands):
         od = self.get_ebands_params()
         return od
 
-    def get_boltztrap_result(self,itemp=None,tmesh=None):
+    def get_boltztrap_result(self,itemp=None,el_temp=300):
         """
         Get one instance of TransportResult according to itemp
 
         Args:
             itemp: the index of the temperature from which to create the TransportResult class
+            el_temp: temperature to use in the Fermi integrations
         """
         reader = self.reader
         wmesh, dos, idos = reader.read_dos()
@@ -67,20 +68,19 @@ class TransportFile(AbinitNcFile, Has_Header, Has_Structure, Has_ElectronBands):
             wmesh, vvdos_tau = reader.read_vvdos_tau()
             vvdos = vvdos_tau[itemp]
             tau_temp = reader.tmesh[itemp]
-
-        if tmesh is None: tmesh = [ 50*i for i in range(1,11)]
+            el_temp = tau_temp
 
         #todo spin
         #self.nsppol
         dos = dos[0]
         vvdos = vvdos[:,:,0]
-        return TransportResult(wmesh,dos,vvdos,self.fermi,tmesh,self.volume,self.nelect,tau_temp=tau_temp,nsppol=1,margin=0.1)
+        return TransportResult(wmesh,dos,vvdos,self.fermi,el_temp,self.volume,self.nelect,tau_temp=tau_temp,nsppol=1,margin=0.1)
 
-    def get_boltztrap_results(self,tmesh=None):
+    def get_boltztrap_results(self):
         """
         Return multiple instances of TransportResults from the data in the TRANSPORT.nc file
         """
-        results = [self.get_boltztrap_result(tmesh=tmesh,itemp=itemp) for itemp in [None]+list(range(self.ntemp))]
+        results = [self.get_boltztrap_result(itemp=itemp) for itemp in [None]+list(range(self.ntemp))]
         return TransportResultRobot(results)
 
     def close(self):

@@ -37,22 +37,22 @@ class TransportResult():
     _attrs = ['_L0','_L1','_L2','_sigma','_seebeck','_kappa']
     _properties = ['sigma','seebeck','kappa','powerfactor','L0','L1','L2']
 
-    def __init__(self,wmesh,dos,vvdos,fermi,tmesh,volume,nelect,tau_temp=None,nsppol=1,margin=0.1):
+    def __init__(self,wmesh,dos,vvdos,fermi,el_temp,volume,nelect,tau_temp=None,nsppol=1,margin=0.1):
 
-        self.fermi  = fermi
-        self.volume = volume
-        self.wmesh  = np.array(wmesh)
-        idx_margin  = int(margin*len(wmesh))
-        self.mumesh = self.wmesh[idx_margin:-(idx_margin+1)]
-        self.tmesh  = np.array(tmesh)
-        self.nsppol = nsppol
-        self.nelect = nelect
+        self.fermi   = fermi
+        self.volume  = volume
+        self.wmesh   = np.array(wmesh)
+        idx_margin   = int(margin*len(wmesh))
+        self.mumesh  = self.wmesh[idx_margin:-(idx_margin+1)]
+        self.el_temp = el_temp
+        self.nsppol  = nsppol
+        self.nelect  = nelect
 
         #Temperature fix
-        if any(self.tmesh < 1):
+        if self.el_temp < 1:
             cprint("Boltztrap does not handle 0K well.\n"
                    "I avoid potential problems by setting all T<1K to T=1K",color="yellow")
-            self.tmesh[self.tmesh < 1] = 1
+            self.el_temp = 1
 
         self.tau_temp = tau_temp
 
@@ -60,23 +60,17 @@ class TransportResult():
         self.vvdos = vvdos
 
     @classmethod
-    def from_evk(cls,filename,itemp=None,tmesh=None):
+    def from_evk(cls,filename,el_temp=300):
         """
-        Initialize the class from an EVK file containing the dos and vvdos computed by abinit
+        Initialize the class from an EVK.nc file containing the dos and vvdos computed by Abinit
+
+        Args:
+            el_temp: electronic temperature (in K) to use in the integrations with the Fermi-Dirac occupations
         """
         from abipy.electrons.ddk import EvkReader
         reader = EvkReader(filename)
         wmesh, dos, idos = reader.read_dos()
-
-        if itemp:
-            wmesh, vvdos_tau = reader.read_vvdos_tau()
-            vvdos = vvdos_tau[itemp]
-        else:
-            wmesh, vvdos = reader.read_vvdos()
-
-        if tmesh is None:
-          ktmesh = reader.read_value("kTmesh")
-          tmesh = ktmesh / abu.kb_HaK
+        wmesh, vvdos = reader.read_vvdos()
 
         ebands = reader.read_ebands()
         fermi = ebands.fermie*abu.eV_Ha
@@ -87,7 +81,7 @@ class TransportResult():
         #todo spin
         dos = dos[0]
         vvdos = vvdos[:,:,0]
-        return cls(wmesh,dos,vvdos,fermi,tmesh,volume,nelect,tau_temp=None,nsppol=1,margin=0.1)
+        return cls(wmesh,dos,vvdos,fermi,el_temp,volume,nelect,tau_temp=None,nsppol=1,margin=0.1)
 
     @property
     def minw(self):
@@ -104,10 +98,6 @@ class TransportResult():
     @property
     def has_tau(self):
         return self.tau_temp is not None
-
-    @property
-    def ntemp(self):
-        return len(self.tmesh)
 
     @property
     def L0(self):
@@ -154,25 +144,24 @@ class TransportResult():
         for attr in self._attrs:
             if hasattr(self,attr): delattr(self,attr)
 
-    def set_tmesh(self,tmesh):
+    def set_el_temp(self,el_temp):
         """
-        Set the temperature mesh in K
+        Set the electronic temperature in K
 
         Args:
-            tmesh: a list of temperatures in K
+            el_temp: electronic temperature (in K) to use in the integrations with the Fermi-Dirac occupations
         """
-        self.tmesh = tmesh
+        self.el_temp = el_temp
         self.del_attrs()
 
-    def set_nmesh(self,nmesh,temperature,mode="boltztrap:refine"):
+    def set_nmesh(self,nmesh,mode="boltztrap:refine"):
         """
         Set the mumesh using a list of carrier concentrations n
 
         Args:
             nmesh: a list of carrier concentrarions in units of electrons/cm^3
         """
-        self.tmesh = np.array([temperature])
-        n0 = self.compute_nelectrons(self.fermi*abu.Ha_eV,temperature,mode=mode)
+        n0 = self.compute_nelectrons(self.fermi*abu.Ha_eV,self.el_temp,mode=mode)
         nelectronsmesh = []
         for n in nmesh:
             # (n e)/cm^3 -> 1e-24 * (n e)/A^3
@@ -192,8 +181,7 @@ class TransportResult():
         """
         mumesh = []
         for nelectrons in nelectronsmesh:
-            temperature=300
-            mu = self.compute_fermi(nelectrons,temperature,mode=mode)
+            mu = self.compute_fermi(nelectrons,self.el_temp,mode=mode)
             mumesh.append(mu)
         self.set_mumesh(np.array(mumesh)*abu.Ha_eV)
 
@@ -213,52 +201,51 @@ class TransportResult():
         self.mumesh = mumesh
         self.del_attrs()
 
-    def compute_nelectrons(self,mu,temperature,mode="boltztrap"):
+    def compute_nelectrons(self,mu,mode="boltztrap"):
         """
-        Compute the number of electrons given a temperature and chemical potential
+        Compute the number of electrons given a chemical potential
 
         Args:
             mu: value of the chemical potential with respect to the Fermi level (eV)
-            temperature: temperature for the Fermi-Dirac distrubution
         """
         if "boltztrap" in mode:
             import BoltzTraP2.bandlib as BL
-            nelectrons = -BL.calc_N(self.wmesh,self.dos,mu*abu.eV_Ha,T=temperature,dosweight=self.spin_degen)
+            nelectrons = -BL.calc_N(self.wmesh,self.dos,mu*abu.eV_Ha,T=self.el_temp,dosweight=self.spin_degen)
             return nelectrons
         else:
             from abipy.core.func1d import Function1D
             from BoltzTraP2.fd import FD
-            occ = FD(self.wmesh,mu*abu.eV_Ha,temperature*abu.kb_HaK)
+            occ = FD(self.wmesh,mu*abu.eV_Ha,self.el_temp*abu.kb_HaK)
             func1d = Function1D.from_constant(self.wmesh,self.dos*self.spin_degen*occ)
             nelectrons = func1d.spline.integral(a=self.minw,b=mu*abu.eV_Ha)
             return nelectrons
 
-    def compute_fermi(self,nelectrons,temperature,mode="boltztrap:refine"):
+    def compute_fermi(self,nelectrons,mode="boltztrap:refine"):
         """
-        Compute the Fermi energy given the number of electrons and temperature of the system
+        Compute the Fermi energy given the number of electrons of the system
         """
         if "boltztrap" in mode:
             import BoltzTraP2.bandlib as BL
             refine = "refine" in mode
-            mu = BL.solve_for_mu(self.wmesh,self.dos,nelectrons,T=temperature,dosweight=self.spin_degen,refine=refine)
+            mu = BL.solve_for_mu(self.wmesh,self.dos,nelectrons,T=self.el_temp,dosweight=self.spin_degen,refine=refine)
             return mu - self.fermi
         else:
             from scipy.optimize import bisect
-            def f(x): return self.compute_nelectrons(x*abu.Ha_eV,temperature)-nelectrons
+            def f(x): return self.compute_nelectrons(x*abu.Ha_eV,self.el_temp)-nelectrons
             mu = bisect(f,a=self.minw,b=self.maxw)
             return mu - self.fermi
 
     def compute_fermiintegrals(self):
         """Compute and store the results of the Fermi integrals"""
         import BoltzTraP2.bandlib as BL
-        results = BL.fermiintegrals(self.wmesh, self.dos, self.vvdos, mur=self.mumesh, Tr=self.tmesh)
+        results = BL.fermiintegrals(self.wmesh, self.dos, self.vvdos, mur=self.mumesh, Tr=np.array([self.el_temp]))
         _, self._L0, self._L1, self._L2, self._Lm11 = results
 
     def compute_onsager_coefficients(self):
         """Compute Onsager coefficients"""
         import BoltzTraP2.bandlib as BL
         L0,L1,L2 = self.L0,self.L1,self.L2
-        results = BL.calc_Onsager_coefficients(L0,L1,L2,mur=self.mumesh,Tr=self.tmesh,vuc=self.volume)
+        results = BL.calc_Onsager_coefficients(L0,L1,L2,mur=self.mumesh,Tr=np.array([self.el_temp]),vuc=self.volume)
         self._sigma, self._seebeck, self._kappa, self._hall = results
 
     @staticmethod
@@ -293,16 +280,15 @@ class TransportResult():
         """
         records = []
         for component in components:
-            for itemp,temp in enumerate(self.tmesh):
-                for imu,mu in enumerate(self.mumesh):
-                    od = OrderedDict()
-                    od['T'] = temp
-                    od['mu'] = (mu-self.fermi)*abu.Ha_eV
-                    od['component'] = component
-                    for what in self._properties:
-                        ylist = self.get_component(what,component,itemp)
-                        od[what] = ylist[imu]
-                    records.append(od)
+            for imu,mu in enumerate(self.mumesh):
+                od = OrderedDict()
+                od['T'] = temp
+                od['mu'] = (mu-self.fermi)*abu.Ha_eV
+                od['component'] = component
+                for what in self._properties:
+                    ylist = self.get_component(what,component)
+                    od[what] = ylist[imu]
+                records.append(od)
         return pd.DataFrame.from_records(records, index=index)
 
     def get_dataframe_fermi(self,index=None):
@@ -312,9 +298,9 @@ class TransportResult():
         btr.set_mumesh([self.fermi])
         return btr.get_dataframe(index=index)
 
-    def get_component(self,what,component,itemp):
+    def get_component(self,what,component):
         i,j = abu.s2itup(component)
-        return getattr(self,what)[itemp,:,i,j]
+        return getattr(self,what)[0,:,i,j]
 
     def plot_mumesh_ax(self,ax):
         """
@@ -356,15 +342,14 @@ class TransportResult():
         ax.set_xlabel('Energy (eV)',fontsize=fontsize)
         if show_fermi: ax.axvline(self.fermi)
 
-    def plot_ax(self, ax, what, components=('xx',), itemp_list=None, fontsize=8, **kwargs):
+    def plot_ax(self, ax, what, components=('xx',), fontsize=8, **kwargs):
         """
-        Plot a quantity for all the dopings as a function of temperature on the axis ax.
+        Plot a quantity for all the dopings on the axis ax.
 
         Args:
             ax: |matplotlib-Axes|.
             what: choose the quantity to plot can be: ['sigma','kappa','powerfactor']
             components: Choose the components of the tensor to plot ['xx','xy','xz','yy',(...)]
-            itemp_list: list of indexes of the tempratures to plot
             colormap: Colormap used to plot the results
             kwargs: Passed to ax.plot
         """
@@ -379,23 +364,15 @@ class TransportResult():
             self.plot_vvdos_ax(ax,components=components,**kwargs)
             return
 
-        itemp_list = list(range(self.ntemp)) if itemp_list is None else duck.list_ints(itemp_list)
-        maxitemp = max(itemp_list)
-        minitemp = min(itemp_list)
-        if maxitemp > self.ntemp or minitemp < 0:
-            raise ValueError('Invalid itemp_list, should be between 0 and %d. Got %d.'%(self.ntemp,maxitemp))
-
         mumesh = (self.mumesh-self.fermi) * abu.Ha_eV
 
         if self.istensor(what):
             color = kwargs.pop('c',None)
-            for itemp in itemp_list:
-                for component in components:
-                    y = self.get_component(what,component,itemp)
-                    if ((len(itemp_list) > 1) and color == None): color=cmap(itemp/len(itemp_list))
-                    label = "%s $_{%s}$ $b_T$ = %dK" % (self.get_letter(what),component,self.tmesh[itemp])
-                    if self.has_tau: label += r" $\tau_T$ = %dK" % self.tau_temp
-                    ax.plot(mumesh,y,label=label,c=color,**kwargs)
+            for component in components:
+                y = self.get_component(what,component)
+                label = "%s $_{%s}$ $b_T$ = %dK" % (self.get_letter(what),component,self.el_temp)
+                if self.has_tau: label += r" $\tau_T$ = %dK" % self.tau_temp
+                ax.plot(mumesh,y,label=label,c=color,**kwargs)
         else:
             ax.plot(mumesh,getattr(self,what), label=what, **kwargs)
 
@@ -439,10 +416,9 @@ class TransportResult():
         """
         lines = []; app = lines.append
         if title is None: app(marquee(self.__class__.__name__,mark=mark))
-        app("fermi:    %8.5lf eV"%(self.fermi*abu.Ha_eV))
-        app("mumesh:   %8.5lf <-> %8.5lf eV"%(self.mumesh[0]*abu.Ha_eV,self.mumesh[-1]*abu.Ha_eV))
-        app("tmesh:    %s K"%self.tmesh)
-        app("has_tau:  %s"%self.has_tau)
+        app("fermi:    %.5lf eV"%(self.fermi*abu.Ha_eV))
+        app("mumesh:   %.5lf <-> %.5lf eV"%(self.mumesh[0]*abu.Ha_eV,self.mumesh[-1]*abu.Ha_eV))
+        app("el_temp:  %.1lf K"%self.el_temp)
         if self.tau_temp: app("tau_temp: %.1lf K"%self.tau_temp)
         return "\n".join(lines)
 
@@ -459,34 +435,22 @@ class TransportResultRobot():
         if not all([isinstance(r,TransportResult) for r in results]):
             raise ValueError('Must provide BolztrapResult instances.')
 
-        #consistency check in the temperature meshes
         res0 = results[0]
-        if np.any([res0.tmesh != res.tmesh for res in results]):
-            cprint("Comparing TransportResults with different temperature meshes.", color="yellow")
-
         #consistency check in chemical potential meshes
-        if np.any([res0.wmesh != res.wmesh for res in results]):
-            cprint("Comparing TransportResults with different energy meshes.", color="yellow")
+        #if np.any([res0.wmesh != res.wmesh for res in results]):
+        #    cprint("Comparing TransportResults with different energy meshes.", color="yellow")
 
         #store the results
         self.results = results
         self.erange = erange
 
-        if not all([np.allclose(results[0].mumesh,result.mumesh) for result in results[1:]]):
-            raise ValueError('The doping meshes of the results differ, cannot continue')
-        self.mumesh = results[0].mumesh
-
-        if not all([np.allclose(results[0].tmesh,result.tmesh) for result in results[1:]]):
-            raise ValueError('The temperature meshes of the results differ, cannot continue')
-        self.tmesh = results[0].tmesh
+        #if not all([np.allclose(results[0].mumesh,result.mumesh) for result in results[1:]]):
+        #    raise ValueError('The doping meshes of the results differ, cannot continue')
+        #self.mumesh = results[0].mumesh
 
     def __getitem__(self,index):
         """Access the results stored in the class as a list"""
         return self.results[index]
-
-    @property
-    def ntemp(self):
-        return len(self.tmesh)
 
     @property
     def tau_list(self):
@@ -496,14 +460,18 @@ class TransportResultRobot():
     @property
     def notau_results(self):
         """Get all the results without the tau included"""
-        instance = self.__class__([ res for res in self.results if res.tau_temp is None ])
+        results = [ res for res in self.results if res.tau_temp is None ]
+        if len(results) == 0: return []
+        instance = self.__class__(results)
         if self.erange: instance.erange = self.erange
         return instance
 
     @property
     def tau_results(self):
         """Return all the results that have temperature dependence"""
-        instance = self.__class__([ res for res in self.results if res.tau_temp ])
+        results = [ res for res in self.results if res.tau_temp ]
+        if len(results) == 0: return []
+        instance = self.__class__(results)
         if self.erange: instance.erange = self.erange
         return instance
 
@@ -527,7 +495,7 @@ class TransportResultRobot():
         with open(filename,'wb') as f:
             pickle.dump(self,f)
 
-    def plot_vvdos_ax(self,ax,legend=True,components=('xx',),itau_list=None,fontsize=8,erange=None,**kwargs):
+    def plot_vvdos_ax(self,ax,legend=True,components=('xx',),fontsize=8,erange=None,**kwargs):
         """
         Plot the vvdos for all the results in the robot
         """
@@ -539,22 +507,10 @@ class TransportResultRobot():
         erange = erange or self.erange
         if erange is not None: ax.set_xlim(erange)
 
-        if itau_list:
-            #filter results by temperature
-            tau_list = [self.tmesh[itau] for itau in itau_list]
-            filtered_results = sorted([res for res in self.results if res.tau_temp in tau_list],key=lambda x: x.tau_temp)
-
-            for itemp,result in enumerate(filtered_results):
-                color = kwargs.pop('c',cmap(itemp/len(filtered_results)))
-                result.plot_vvdos_ax(ax,fontsize=fontsize,c=color,components=components,**kwargs)
-            ax.set_ylabel(r'with $\tau$',fontsize=fontsize)
-            if legend: ax.legend(loc="best", shadow=True, fontsize=fontsize)
-        else:
-            #results without temperature
-            for result in self.notau_results:
-                result.plot_vvdos_ax(ax,fontsize=fontsize,components=components,**kwargs)
-            ax.set_ylabel(r'without $\tau$',fontsize=fontsize)
-            if legend: ax.legend(loc="best", shadow=True, fontsize=fontsize)
+        for result in self.results:
+            result.plot_vvdos_ax(ax,fontsize=fontsize,components=components,**kwargs)
+        ax.set_ylabel(r'without $\tau$',fontsize=fontsize)
+        if legend: ax.legend(loc="best", shadow=True, fontsize=fontsize)
 
     def plot_dos_ax(self, ax1, legend=True, fontsize=8, erange=None, **kwargs):
         """
@@ -568,15 +524,13 @@ class TransportResultRobot():
             result.plot_dos_ax(ax1,fontsize=fontsize,**kwargs)
         if legend: ax1.legend(loc="best", shadow=True, fontsize=fontsize)
 
-    def plot_ax(self,ax1,what,components=('xx',),itemp_list=None,itau_list=None,fontsize=8,erange=None,**kwargs):
+    def plot_ax(self,ax1,what,components=('xx',),fontsize=8,erange=None,**kwargs):
         """
         Plot the same quantity for all the results on axis ax1
 
         Args:
             ax1: |matplotlib-Axes|.
             what: choose the quantity to plot can be: ['sigma','kappa','powerfactor']
-            itemp_list: list of indexes of the tempratures to plot
-            itau_list: list of indexes of the tempratures at which the lifetimes were computed
             components: Choose the components of the tensor to plot ['xx','xy','xz','yy',(...)]
             erange: choose energy range of the plot
             kwargs: Passed to ax.plot
@@ -589,31 +543,20 @@ class TransportResultRobot():
         erange = erange or self.erange
         if erange is not None: ax1.set_xlim(erange)
 
-        if itau_list:
-            #filter results by temperature
-            tau_list = self.tmesh if itau_list is None else [self.tmesh[itau] for itau in itau_list]
-            filtered_results = [res for res in self.results if res.tau_temp in tau_list]
-
-            #plot the results
-            for itemp,result in enumerate(filtered_results):
-                color = kwargs.pop('c',cmap(itemp/len(filtered_results)))
-                result.plot_ax(ax1,what,components,itemp_list,fontsize=fontsize,c=color,**kwargs)
-        else:
-            #plot result without tau
-            for result in self.notau_results:
-                result.plot_ax(ax1,what,components,itemp_list,fontsize=fontsize,**kwargs)
+        for result in self.results:
+            result.plot_ax(ax1,what,components,fontsize=fontsize,**kwargs)
 
     @add_fig_kwargs
-    def plot_transport(self, itemp_list=None, itau_list=None, components=('xx',),
+    def plot_transport(self, itau_list=None, components=('xx',),
                        erange=None, ax_array=None, fontsize=8, legend=True, **kwargs):
         """
         Plot the different quantities relevant for transport for all the results in the robot
         """
         ax_array, fig, plt = get_axarray_fig_plt(ax_array,nrows=2,ncols=2)
-        self.plot_ax(ax_array[0,0],'sigma',      itemp_list=itemp_list,itau_list=itau_list,fontsize=fontsize,**kwargs)
-        self.plot_ax(ax_array[0,1],'seebeck',    itemp_list=itemp_list,itau_list=itau_list,fontsize=fontsize,**kwargs)
-        self.plot_ax(ax_array[1,0],'kappa',      itemp_list=itemp_list,itau_list=itau_list,fontsize=fontsize,**kwargs)
-        self.plot_ax(ax_array[1,1],'powerfactor',itemp_list=itemp_list,itau_list=itau_list,fontsize=fontsize,**kwargs)
+        self.plot_ax(ax_array[0,0],'sigma',      fontsize=fontsize,**kwargs)
+        self.plot_ax(ax_array[0,1],'seebeck',    fontsize=fontsize,**kwargs)
+        self.plot_ax(ax_array[1,0],'kappa',      fontsize=fontsize,**kwargs)
+        self.plot_ax(ax_array[1,1],'powerfactor',fontsize=fontsize,**kwargs)
 
         if legend:
             for ax in ax_array.flatten(): ax.legend(loc="best", shadow=True, fontsize=fontsize)
@@ -622,21 +565,18 @@ class TransportResultRobot():
         return fig
 
     @add_fig_kwargs
-    def plot(self,what,itemp_list=None,itau_list=None,components=('xx',),
-             erange=None,fontsize=8,legend=True,**kwargs):
+    def plot(self,what,components=('xx',),erange=None,fontsize=8,legend=True,**kwargs):
         """
         Plot all the boltztrap results in the Robot
 
         Args:
             what: choose the quantity to plot can be: ['sigma','kappa','powerfactor']
-            itemp_list: list of indexes of the tempratures to plot
-            itau_list: list of indexes of the tempratures at which the lifetimes were computed
             components: Choose the components of the tensor to plot ['xx','xy','xz','yy',(...)]
             erange: choose energy range of the plot
             kwargs: Passed to ax.plot
         """
         ax1, fig, plt = get_ax_fig_plt(ax=None)
-        self.plot_ax(ax1,what,components=components,itemp_list=itemp_list,itau_list=itau_list,
+        self.plot_ax(ax1,what,components=components,
                      fontsize=fontsize,erange=erange,**kwargs)
         if legend: ax1.legend(loc="best", shadow=True, fontsize=fontsize)
         return fig
@@ -646,11 +586,9 @@ class TransportResultRobot():
         """
         Plot dos and vvdos on the same figure
         """
-        ax_array, fig, plt = get_axarray_fig_plt(ax_array,nrows=3)
+        ax_array, fig, plt = get_axarray_fig_plt(ax_array,nrows=2)
         self.plot_dos_ax(ax_array[0],erange=erange,legend=legend,fontsize=fontsize,**kwargs)
         self.plot_vvdos_ax(ax_array[1],components=components,erange=erange,fontsize=fontsize,legend=legend)
-        self.plot_vvdos_ax(ax_array[2],itau_list=range(self.ntemp),components=components,erange=erange,
-                           fontsize=fontsize,legend=legend)
         return fig
 
     @add_fig_kwargs
@@ -661,18 +599,6 @@ class TransportResultRobot():
         ax1, fig, plt = get_ax_fig_plt(ax=ax)
         self.plot_dos_ax(ax1,erange=erange,legend=legend,fontsize=fontsize,**kwargs)
         return fig
-
-    @add_fig_kwargs
-    def plot_vvdos(self,ax_array=None,itau_list=None,components=('xx',),erange=None,fontsize=8,legend=True,**kwargs):
-        """
-        Plot vvdos for all the results in the Robot
-        """
-        ax_array, fig, plt = get_axarray_fig_plt(ax_array=ax_array,sharex=True,nrows=2)
-
-        self.plot_vvdos_ax(ax_array[0],components=components,erange=erange,fontsize=fontsize,legend=legend)
-        self.plot_vvdos_ax(ax_array[1],itau_list=range(self.ntemp),components=components,erange=erange,
-                           fontsize=fontsize,legend=legend)
-        return fig, ax_array
 
     def set_erange(self,emin,emax):
         """ Get an energy range based on an energy margin above and bellow the fermi level"""

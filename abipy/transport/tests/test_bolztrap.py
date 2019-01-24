@@ -45,7 +45,6 @@ class AbipyBoltztrapTest(AbipyTest):
         pickle_file = self.get_tmpname(suffix="diamond.npy")
         btr.pickle(pickle_file)
         same_result = TransportResult.from_pickle(pickle_file)
-        self.assert_equal(btr.tmesh, same_result.tmesh)
 
         if self.has_matplotlib():
             # Plot the density of states and VVDOS for multiple temperatures
@@ -53,7 +52,7 @@ class AbipyBoltztrapTest(AbipyTest):
 
             # Plot transport related quantities for different combinations of
             # tau temperature and boltztrap temperature
-            assert btr.plot('sigma', itemp_list=None, itau_list=[3], show=False)
-            assert btr.plot('seebeck', itemp_list=[3], itau_list=[1,2], show=False)
-            assert btr.plot('powerfactor', itemp_list=[3], itau_list=None, show=False)
+            assert btr.plot('sigma', show=False)
+            assert btr.plot('seebeck', show=False)
+            assert btr.plot('powerfactor', show=False)
             assert btr.plot_transport(show=False)

@@ -116,23 +116,23 @@ class AbipyBoltztrap():
         raise NotImplementedError('TODO')
 
     @classmethod
-    def from_dftdata(cls,dftdata,tmesh,lpratio=5):
+    def from_dftdata(cls,dftdata,el_temp=300,lpratio=5):
         """
         Initialize an instance of this class from a DFTData instance from Boltztrap
 
         Args:
             dftdata: DFTData
-            tmesh: a list of temperatures to use in the fermi integrations
+            el_temp: electronic temperature (in K) to use in the integrations with the Fermi-Dirac occupations
             lpratio: ratio to multiply by the number of k-points in the IBZ and give the
                      number of real space points inside a sphere
         """
         structure = Structure.from_ase_atoms(dftdata.atoms)
         return cls(dftdata.fermi,structure,dftdata.nelect,dftdata.kpoints,dftdata.ebands,
-                   dftdata.get_volume(),linewidths=None,tmesh=tmesh,
+                   dftdata.get_volume(),linewidths=None,el_temp=el_temp,
                    mommat=dftdata.mommat,magmom=None,lpratio=lpratio)
 
     @classmethod
-    def from_sigeph(cls, sigeph, itemp_list=None, bstart=None, bstop=None, lpratio=5):
+    def from_sigeph(cls, sigeph, itemp_list=None, bstart=None, bstop=None, el_temp=300, lpratio=5):
         """
         Initialize interpolation of the bands and lifetimes from a SigEphFile object
 
@@ -140,6 +140,7 @@ class AbipyBoltztrap():
             sigeph: |SigEphFile| instance
             itemp_list: list of the temperature indexes to consider
             bstart, bstop: only consider bands between bstart and bstop
+            el_temp: electronic temperature (in K) to use in the integrations with the Fermi-Dirac occupations
             lpratio: ratio to multiply by the number of k-points in the IBZ and give the
                      number of real space points inside a sphere
         """
@@ -284,7 +285,7 @@ class AbipyBoltztrap():
         delattr(self,"ebands")
 
     @timeit
-    def run(self,npts=500,dos_method='gaussian:0.05 eV',erange=None,margin=0.1,nworkers=1,verbose=0):
+    def run(self,npts=500,dos_method='gaussian:0.05 eV',erange=None,el_temp=300,margin=0.1,nworkers=1,verbose=0):
         """
         Interpolate the eingenvalues to compute dos and vvdos
         This part is quite memory intensive
@@ -292,6 +293,7 @@ class AbipyBoltztrap():
         Args:
             npts: number of frequency points
             dos_method: when using a patched version of Boltztrap
+            el_temp: electronic temperature (in K) to use in the integrations with the Fermi-Dirac occupations
         """
         boltztrap_results = []; app = boltztrap_results.append
         import inspect
@@ -344,7 +346,7 @@ class AbipyBoltztrap():
         #calculate DOS and VDOS without lifetimes
         if verbose: print('calculating dos and vvdos without lifetimes')
         wmesh,dos,vvdos = BTPDOS(eig_fine, vvband, erange=erange, npts=npts, mode=dos_method)
-        app(TransportResult(wmesh,dos,vvdos,self.fermi,self.tmesh,self.volume,self.nelect,margin=margin))
+        app(TransportResult(wmesh,dos,vvdos,self.fermi,el_temp,self.volume,self.nelect,margin=margin))
 
         #if we have linewidths
         if self.linewidths:
@@ -361,8 +363,9 @@ class AbipyBoltztrap():
                 wmesh, dos_tau, vvdos_tau = BTPDOS(eig_fine, vvband, erange=erange, npts=npts,
                                                       scattering_model=tau_fine, mode=dos_method)
                 #store results
-                app(TransportResult(wmesh,dos_tau,vvdos_tau,self.fermi,self.tmesh,
-                                    self.volume,self.nelect,tau_temp=self.tmesh[itemp],margin=margin))
+                tau_temp = self.tmesh[itemp]
+                app(TransportResult(wmesh,dos_tau,vvdos_tau,self.fermi,tau_temp,
+                                    self.volume,self.nelect,tau_temp=tau_temp,margin=margin))
 
         return TransportResultRobot(boltztrap_results)
 
