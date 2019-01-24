@@ -392,6 +392,24 @@ class GsrReader(ElectronsReader):
             raise RuntimeError("The 'reduced_electronic_polarization' variable requires berryopt != 0 in the input file and Abinit9")
         return self.read_value("reduced_electronic_polarization")
 
+    def read_reduced_ionic_berryphase(self):
+        """
+        Read and return a |numpy-array| with the reduced ionic berry phase in unit ``unit``.
+        Shape (3)
+        """
+        if "reduced_ionic_berryphase" not in self.rootgrp.variables:
+            raise RuntimeError("The 'reduced_ionic_berryphase' variable requires berryopt != 0 in the input file and Abinit9")
+        return self.read_value("reduced_ionic_berryphase")
+
+    def read_reduced_electronic_berryphase(self):
+        """
+        Read and return a |numpy-array| with the reduced electronic berry phase in unit ``unit``.
+        Shape (3)
+        """
+        if "reduced_electronic_berryphase" not in self.rootgrp.variables:
+            raise RuntimeError("The 'reduced_electronic_berryphase' variable requires berryopt != 0 in the input file and Abinit9")
+        return self.read_value("reduced_electronic_berryphase")
+
     def read_cart_stress_tensor(self):
         """
         Return the stress tensor (3x3 matrix) in cartesian coordinates in GPa.
