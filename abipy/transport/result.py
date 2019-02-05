@@ -282,7 +282,6 @@ class TransportResult():
         for component in components:
             for imu,mu in enumerate(self.mumesh):
                 od = OrderedDict()
-                od['T'] = temp
                 od['mu'] = (mu-self.fermi)*abu.Ha_eV
                 od['component'] = component
                 for what in self._properties:
@@ -319,7 +318,8 @@ class TransportResult():
             fermi: Choose
         """
         wmesh = (self.wmesh-self.fermi) * abu.Ha_eV
-        ax.plot(wmesh,self.dos,label=self.get_letter('dos'),**kwargs)
+        label = kwargs.pop('label',self.get_letter('dos'))
+        ax.plot(wmesh,self.dos,label=label,**kwargs)
         ax.set_xlabel('Energy (eV)',fontsize=fontsize)
         if show_fermi: ax.axvline(self.fermi)
 
@@ -336,7 +336,7 @@ class TransportResult():
 
         for component in components:
             i,j = abu.s2itup(component)
-            label = "%s $_{%s}$" % (self.get_letter('vvdos'),component)
+            label = kwargs.pop('label',"%s $_{%s}$" % (self.get_letter('vvdos'),component))
             if self.tau_temp: label += r" $\tau_T$ = %dK" % self.tau_temp
             ax.plot(wmesh,self.vvdos[i,j,:],label=label,**kwargs)
         ax.set_xlabel('Energy (eV)',fontsize=fontsize)
@@ -370,7 +370,7 @@ class TransportResult():
             color = kwargs.pop('c',None)
             for component in components:
                 y = self.get_component(what,component)
-                label = "%s $_{%s}$ $b_T$ = %dK" % (self.get_letter(what),component,self.el_temp)
+                label = kwargs.pop('label',"%s $_{%s}$ $b_T$ = %dK" % (self.get_letter(what),component,self.el_temp))
                 if self.has_tau: label += r" $\tau_T$ = %dK" % self.tau_temp
                 ax.plot(mumesh,y,label=label,c=color,**kwargs)
         else:

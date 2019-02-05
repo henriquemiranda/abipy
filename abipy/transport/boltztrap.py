@@ -128,7 +128,7 @@ class AbipyBoltztrap():
         """
         structure = Structure.from_ase_atoms(dftdata.atoms)
         return cls(dftdata.fermi,structure,dftdata.nelect,dftdata.kpoints,dftdata.ebands,
-                   dftdata.get_volume(),linewidths=None,el_temp=el_temp,
+                   dftdata.get_volume(),linewidths=None,tmesh=None,
                    mommat=dftdata.mommat,magmom=None,lpratio=lpratio)
 
     @classmethod

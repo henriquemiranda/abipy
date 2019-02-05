@@ -46,7 +46,8 @@ __all__ = [
 # __eq__ based on skb?
 # broadening, adiabatic ??
 
-class QpTempState(namedtuple("QpTempState", "spin kpoint band tmesh e0 qpe ze0 fan0 taumrta dw qpe_oms")):
+#class QpTempState(namedtuple("QpTempState", "spin kpoint band tmesh e0 qpe ze0 fan0 linewidth_mrta dw qpe_oms")):
+class QpTempState(namedtuple("QpTempState", "spin kpoint band tmesh e0 qpe ze0 fan0 dw qpe_oms")):
     """
     Quasi-particle result for given (spin, kpoint, band).
 
@@ -985,7 +986,10 @@ class SigEPhFile(AbinitNcFile, Has_Structure, Has_ElectronBands, NotebookWriter)
         |ElectronDos| object computed by Abinit with the input WFK file without doping (if any).
         """
         # See m_ebands.edos_ncwrite for fileformat
-        mesh = self.reader.read_value("edos_mesh") * abu.Ha_eV
+        try:
+            mesh = self.reader.read_value("edos_mesh") * abu.Ha_eV
+        except self.reader.Error:
+            return None
         # nctkarr_t("edos_dos", "dp", "edos_nw, nsppol_plus1"), &
         # dos(nw,0:nsppol) Total DOS, spin up and spin down component.
         spin_dos = self.reader.read_value("edos_dos") / abu.Ha_eV
@@ -1868,7 +1872,8 @@ class SigEPhFile(AbinitNcFile, Has_Structure, Has_ElectronBands, NotebookWriter)
                 yield self.plot_qpgaps_t(qp_kpoints=qp_kpt, show=False)
             yield self.plot_qps_vs_e0(show=False)
 
-        yield self.edos.plot(show=False)
+        if self.edos:
+            yield self.edos.plot(show=False)
 
     def write_notebook(self, nbpath=None, title=None):
         """
@@ -2923,8 +2928,8 @@ class SigmaPhReader(BaseEphReader):
         fan0 = sigc - dw
 
         # Read tau in the momentum relaxation time approximation
-        var = self.read_variable("tau_mrta")
-        taumrta = var[spin, ikc, ibc, :]
+        #var = self.read_variable("linewidth_mrta")
+        #linewidth_mrta = var[spin, ikc, ibc, :]
 
         # nctkarr_t("ks_enes", "dp", "max_nbcalc, nkcalc, nsppol")
         e0 = self.read_variable("ks_enes")[spin, ikc, ibc] * abu.Ha_eV
@@ -2941,7 +2946,7 @@ class SigmaPhReader(BaseEphReader):
             qpe=ri(qpe),
             ze0=ze0,
             fan0=ri(fan0),
-            taumrta=taumrta,
+#            linewidth_mrta=linewidth_mrta,
             dw=dw,
             qpe_oms=qpe_oms,
         )
