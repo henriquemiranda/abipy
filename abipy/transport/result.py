@@ -10,6 +10,7 @@ Warning:
 """
 import pickle
 import numpy as np
+import scipy as sp
 import pandas as pd
 import abipy.core.abinit_units as abu
 from itertools import product
@@ -34,8 +35,8 @@ class TransportResult():
     Provides a object oriented interface to BoltztraP2
     for plotting, storing and analysing the results
     """
-    _attrs = ['_L0','_L1','_L2','_sigma','_seebeck','_kappa']
-    _properties = ['sigma','seebeck','kappa','powerfactor','L0','L1','L2']
+    _attrs = ['_N','_L0','_L1','_L2','_sigma','_seebeck','_kappa']
+    _properties = ['n','sigma','seebeck','kappa','powerfactor','L0','L1','L2']
 
     def __init__(self,wmesh,dos,vvdos,fermi,el_temp,volume,nelect,tau_temp=None,nsppol=1,margin=0.1):
 
@@ -100,6 +101,12 @@ class TransportResult():
         return self.tau_temp is not None
 
     @property
+    def N(self):
+        if not hasattr(self,'_N'):
+            self.compute_fermiintegrals()
+        return self._N
+
+    @property
     def L0(self):
         if not hasattr(self,'_L0'):
             self.compute_fermiintegrals()
@@ -116,6 +123,12 @@ class TransportResult():
         if not hasattr(self,'_L2'):
             self.compute_fermiintegrals()
         return self._L2
+
+    @property
+    def mobility(self):
+        if not hasattr(self,'_mobility'):
+            self.compute_onsager_coefficients()
+        return self._mobility
 
     @property
     def sigma(self):
@@ -154,37 +167,6 @@ class TransportResult():
         self.el_temp = el_temp
         self.del_attrs()
 
-    def set_nmesh(self,nmesh,mode="boltztrap:refine"):
-        """
-        Set the mumesh using a list of carrier concentrations n
-
-        Args:
-            nmesh: a list of carrier concentrarions in units of electrons/cm^3
-        """
-        n0 = self.compute_nelectrons(self.fermi*abu.Ha_eV,self.el_temp,mode=mode)
-        nelectronsmesh = []
-        for n in nmesh:
-            # (n e)/cm^3 -> 1e-24 * (n e)/A^3
-            # n: carrier concentration
-            # electron: e
-            nelectrons = n0 + 1e-24 * n * self.volume
-            nelectronsmesh.append(nelectrons)
-        self.set_nelectronmesh(nelectronsmesh,mode=mode)
-        return nelectronsmesh
-
-    def set_nelectronmesh(self,nelectronsmesh,mode="boltztrap:refine"):
-        """
-        Set the mumesh mesh by specfying a list of the number of electrons in the system
-
-        Args:
-            nelectronsmesh: a list of number of electrons to compute mu with
-        """
-        mumesh = []
-        for nelectrons in nelectronsmesh:
-            mu = self.compute_fermi(nelectrons,self.el_temp,mode=mode)
-            mumesh.append(mu)
-        self.set_mumesh(np.array(mumesh)*abu.Ha_eV)
-
     def set_mumesh(self,mumesh):
         """
         Set a list of mu at which to compute the transport properties
@@ -201,45 +183,15 @@ class TransportResult():
         self.mumesh = mumesh
         self.del_attrs()
 
-    def compute_nelectrons(self,mu,mode="boltztrap"):
-        """
-        Compute the number of electrons given a chemical potential
-
-        Args:
-            mu: value of the chemical potential with respect to the Fermi level (eV)
-        """
-        if "boltztrap" in mode:
-            import BoltzTraP2.bandlib as BL
-            nelectrons = -BL.calc_N(self.wmesh,self.dos,mu*abu.eV_Ha,T=self.el_temp,dosweight=self.spin_degen)
-            return nelectrons
-        else:
-            from abipy.core.func1d import Function1D
-            from BoltzTraP2.fd import FD
-            occ = FD(self.wmesh,mu*abu.eV_Ha,self.el_temp*abu.kb_HaK)
-            func1d = Function1D.from_constant(self.wmesh,self.dos*self.spin_degen*occ)
-            nelectrons = func1d.spline.integral(a=self.minw,b=mu*abu.eV_Ha)
-            return nelectrons
-
-    def compute_fermi(self,nelectrons,mode="boltztrap:refine"):
-        """
-        Compute the Fermi energy given the number of electrons of the system
-        """
-        if "boltztrap" in mode:
-            import BoltzTraP2.bandlib as BL
-            refine = "refine" in mode
-            mu = BL.solve_for_mu(self.wmesh,self.dos,nelectrons,T=self.el_temp,dosweight=self.spin_degen,refine=refine)
-            return mu - self.fermi
-        else:
-            from scipy.optimize import bisect
-            def f(x): return self.compute_nelectrons(x*abu.Ha_eV,self.el_temp)-nelectrons
-            mu = bisect(f,a=self.minw,b=self.maxw)
-            return mu - self.fermi
-
     def compute_fermiintegrals(self):
         """Compute and store the results of the Fermi integrals"""
         import BoltzTraP2.bandlib as BL
         results = BL.fermiintegrals(self.wmesh, self.dos, self.vvdos, mur=self.mumesh, Tr=np.array([self.el_temp]))
-        _, self._L0, self._L1, self._L2, self._Lm11 = results
+        N, self._L0, self._L1, self._L2, self._Lm11 = results
+        # Compute carrier density (N/Bohr^3)
+        f = sp.interpolate.interp1d(self.mumesh,N[0])
+        n0 = f(self.fermi)
+        self._N = (N[0] - n0) / self.volume
 
     def compute_onsager_coefficients(self):
         """Compute Onsager coefficients"""
@@ -247,6 +199,49 @@ class TransportResult():
         L0,L1,L2 = self.L0,self.L1,self.L2
         results = BL.calc_Onsager_coefficients(L0,L1,L2,mur=self.mumesh,Tr=np.array([self.el_temp]),vuc=self.volume)
         self._sigma, self._seebeck, self._kappa, self._hall = results
+        # compute carier density (N/m^3) (N is the number of electrons)
+        n = self.N[None,:,None,None] / ( abu.Bohr_Ang*1e-10 )**3
+        # charge density (q/m^3)
+        en = (abu.e_Cb*n)
+        # compute mobility in cm^2 / (Vs)
+        self._mobility = np.divide(self._sigma, en, out=np.zeros_like(self._sigma), where=en!=0) * 100**2
+
+    def get_value_at_mu(self,what,mu,component='xx'):
+        """
+        Get the value of a property at a certain chemical potential (eV)
+
+        Args
+            what: quantity to plot
+            mu: value of the chemical potential (eV)
+            component: the component of the tensor
+        """
+        x = self.mumesh-self.fermi
+        y = self.get_component(what,component)
+        f = sp.interpolate.interp1d(x,y)
+        return f(mu*abu.eV_Ha)
+
+    def get_mu_at_n(self,n):
+        """
+        Get the value of the chemical potential at a given carrier concentrarion
+
+        Args
+            n: value of the carrier density (N/cm^3) positive for electrons, negative for holes
+        """
+        x = self.N/( abu.Bohr_Ang*1e-8 )**3
+        y = (self.mumesh-self.fermi)*abu.Ha_eV
+        f = sp.interpolate.interp1d(x,y)
+        return f(n)
+
+    def get_value_at_n(self,what,n,component='xx'):
+        """
+        Get the value of a property at a certain carrier concentration
+
+        Args
+            what: quantity to plot
+            n: value of the carrier density (N/cm^3) positive for electrons, negative for holes
+        """
+        efermi = self.get_fermi_at_n(n)
+        return self.get_value_at_mu(what,efermi,component=component)
 
     @staticmethod
     def from_pickle(filename):
@@ -300,13 +295,6 @@ class TransportResult():
     def get_component(self,what,component):
         i,j = abu.s2itup(component)
         return getattr(self,what)[0,:,i,j]
-
-    def plot_mumesh_ax(self,ax):
-        """
-        Plot the different values of mu in the ax as vrtical lines
-        """
-        for mu in self.mumesh:
-            ax.axvline((mu-self.fermi)*abu.Ha_eV)
 
     def plot_dos_ax(self,ax,fontsize=8,show_fermi=False,**kwargs):
         """
@@ -381,14 +369,15 @@ class TransportResult():
 
     def get_ylabel(self,what):
         """
-        Get a label with units for the quntities stores in this object.
+        Get a label with units for the quantities stores in this object.
         """
-        if self.has_tau: tau = ''
-        else: tau = 's^{-1}'
+        if self.has_tau: tau = 's^{-1}'
+        else: tau = ''
         if what == 'sigma':       return r'$\sigma$ [$Sm^{-1}%s$]'%tau
         if what == 'seebeck':     return r'$S$ [$VSm^{-1}%s$]'%tau
         if what == 'kappa':       return r'$\kappa_e$ [$VJSm^{-1}%s$]'%tau
         if what == 'powerfactor': return r'$S^2\sigma$ [$VJSm^{-1}%s$]'%tau
+        if what == 'mobility':    return r'$\mu_e$ [$cm^2V^{-1}%s$]'%tau
         return ''
 
     def get_letter(self,what):
@@ -398,6 +387,7 @@ class TransportResult():
                    'powerfactor':r'$S^2\sigma$',
                    'vvdos':      r'$v\otimes v$',
                    'dos':        r'$n(\epsilon)$',
+                   'mobility':   r'$\mu_e(\epsilon)$',
                    'L0':         r'$\mathcal{l}^{(0)}$',
                    'L1':         r'$\mathcal{l}^{(1)}$',
                    'L2':         r'$\mathcal{l}^{(2)}$'}
