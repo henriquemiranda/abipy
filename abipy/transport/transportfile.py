@@ -126,7 +126,7 @@ class TransportReader(ElectronsReader):
         wmesh = vals[:]
         vals = self.read_variable("vvdos_tau")
         nsppol = vals.shape[1]-1
-        vvdos_tau = vals[:,:,:,1:,:]
+        vvdos_tau = vals[:,:,:,1:,:]/(2*abu.Ha_s)
         return wmesh, vvdos_tau
 
     def read_dos(self):

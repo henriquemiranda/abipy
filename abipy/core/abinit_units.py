@@ -31,7 +31,7 @@ eV_to_K = eV_Ha * Ha_K
 # 1 Hartree, in THz
 Ha_THz = 6579.683920722
 # 1 eV, in THz
-eV_to_THz = eV_Ha * Ha_THz
+eV_THz = eV_Ha * Ha_THz
 # 1 eV, in cm-1
 eV_to_cm1 = 8065.5440044136285
 # 1 Hartree, in J
@@ -51,7 +51,9 @@ HaBohr3_GPa = Ha_eV / Bohr_Ang**3 * e_Cb * 1.0e+21
 # 1 eV/A^3 to GPa
 eVA3_GPa = 160.21766208
 # 1 eV in seconds
-eV_s = eV_to_THz*1e12 * 2*np.pi
+eV_s = eV_THz*1e12 * 2*np.pi
+# 1 Ha in seconds
+Ha_s = Ha_THz*1e12 * 2*np.pi
 # conversion factor for velocity between atomic units and SI
 velocity_at_to_si = 2.1876912633e6
 

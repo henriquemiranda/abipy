@@ -397,7 +397,10 @@ class TransportResult():
                    'kappa':      r'$\kappa_e$',
                    'powerfactor':r'$S^2\sigma$',
                    'vvdos':      r'$v\otimes v$',
-                   'dos':        r'$n(\epsilon)$'}
+                   'dos':        r'$n(\epsilon)$',
+                   'L0':         r'$\mathcal{l}^{(0)}$',
+                   'L1':         r'$\mathcal{l}^{(1)}$',
+                   'L2':         r'$\mathcal{l}^{(2)}$'}
         return letters[what]
 
     @add_fig_kwargs
@@ -509,7 +512,6 @@ class TransportResultRobot():
 
         for result in self.results:
             result.plot_vvdos_ax(ax,fontsize=fontsize,components=components,**kwargs)
-        ax.set_ylabel(r'without $\tau$',fontsize=fontsize)
         if legend: ax.legend(loc="best", shadow=True, fontsize=fontsize)
 
     def plot_dos_ax(self, ax1, legend=True, fontsize=8, erange=None, **kwargs):

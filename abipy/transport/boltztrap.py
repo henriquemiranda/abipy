@@ -356,7 +356,7 @@ class AbipyBoltztrap():
                 results = fite.getBTPbands(self.equivalences, self._linewidth_coefficients[itemp],
                                            self.lattvec, nworkers=nworkers)
                 linewidth_fine, vvband_, cband_ = results
-                tau_fine = 1.0/np.abs(2*linewidth_fine*abu.eV_s)
+                tau_fine = 1.0/np.abs(2*linewidth_fine*abu.Ha_s) # NOTE conversion from eV to Hartree done before
 
                 #calculate vvdos with the lifetimes
                 if verbose: print('calculating dos and vvdos with lifetimes')
