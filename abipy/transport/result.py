@@ -35,8 +35,8 @@ class TransportResult():
     Provides a object oriented interface to BoltztraP2
     for plotting, storing and analysing the results
     """
-    _attrs = ['_N','_L0','_L1','_L2','_sigma','_seebeck','_kappa']
-    _properties = ['n','sigma','seebeck','kappa','powerfactor','L0','L1','L2']
+    _attrs = ['_N','_mobility','_L0','_L1','_L2','_sigma','_seebeck','_kappa']
+    _properties = ['N','mobility','sigma','seebeck','kappa','powerfactor','L0','L1','L2']
 
     def __init__(self,wmesh,dos,vvdos,fermi,el_temp,volume,nelect,tau_temp=None,nsppol=1,margin=0.1):
 
@@ -155,7 +155,8 @@ class TransportResult():
     def del_attrs(self):
         """ Remove all the atributes so they are recomputed when requested """
         for attr in self._attrs:
-            if hasattr(self,attr): delattr(self,attr)
+            if hasattr(self,attr):
+                delattr(self,attr)
 
     def set_el_temp(self,el_temp):
         """
@@ -191,20 +192,21 @@ class TransportResult():
         # Compute carrier density (N/Bohr^3)
         f = sp.interpolate.interp1d(self.mumesh,N[0])
         n0 = f(self.fermi)
-        self._N = (N[0] - n0) / self.volume
+        self._N = (N[0] - n0) / self.volume / ( abu.Bohr_Ang*1e-10 )**3
+        #self._N = np.abs(self._N)
 
     def compute_onsager_coefficients(self):
         """Compute Onsager coefficients"""
         import BoltzTraP2.bandlib as BL
         L0,L1,L2 = self.L0,self.L1,self.L2
-        results = BL.calc_Onsager_coefficients(L0,L1,L2,mur=self.mumesh,Tr=np.array([self.el_temp]),vuc=self.volume)
+        results = BL.calc_Onsager_coefficients(L0, L1, L2, mur=self.mumesh, Tr=np.array([self.el_temp]), vuc=self.volume)
         self._sigma, self._seebeck, self._kappa, self._hall = results
         # compute carier density (N/m^3) (N is the number of electrons)
-        n = self.N[None,:,None,None] / ( abu.Bohr_Ang*1e-10 )**3
+        n = self.N[None,:,None,None]
         # charge density (q/m^3)
         en = (abu.e_Cb*n)
         # compute mobility in cm^2 / (Vs)
-        self._mobility = np.divide(self._sigma, en, out=np.zeros_like(self._sigma), where=en!=0) * 100**2
+        self._mobility = np.divide(self._sigma, en, where=en!=0) * 100**2
 
     def get_value_at_mu(self,what,mu,component='xx'):
         """
