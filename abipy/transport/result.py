@@ -107,6 +107,12 @@ class TransportResult():
         return self._N
 
     @property
+    def kernel(self):
+        from BoltzTraP2.fd import dFDde
+        import BoltzTraP2.units as btu
+        return -self.vvdos*dFDde(self.wmesh-self.fermi,0,self.el_temp*btu.BOLTZMANN)
+
+    @property
     def L0(self):
         if not hasattr(self,'_L0'):
             self.compute_fermiintegrals()
@@ -217,10 +223,10 @@ class TransportResult():
             mu: value of the chemical potential (eV)
             component: the component of the tensor
         """
-        x = self.mumesh-self.fermi
+        x = (self.mumesh-self.fermi)*abu.Ha_eV
         y = self.get_component(what,component)
         f = sp.interpolate.interp1d(x,y)
-        return f(mu*abu.eV_Ha)
+        return f(mu)
 
     def get_mu_at_n(self,n):
         """
@@ -310,6 +316,25 @@ class TransportResult():
         wmesh = (self.wmesh-self.fermi) * abu.Ha_eV
         label = kwargs.pop('label',self.get_letter('dos'))
         ax.plot(wmesh,self.dos,label=label,**kwargs)
+        ax.set_xlabel('Energy (eV)',fontsize=fontsize)
+        if show_fermi: ax.axvline(self.fermi)
+
+    def plot_kernel_ax(self,ax,components=('xx',),fontsize=8,show_fermi=False,**kwargs):
+        """
+        Plot components of vvdos on the axis ax.
+
+        Args:
+            ax: |matplotlib-Axes|.
+            components: Choose the components of the tensor to plot ['xx','xy','xz','yy',(...)]
+            kwargs: Passed to ax.plot
+        """
+        wmesh = (self.wmesh-self.fermi) * abu.Ha_eV
+
+        for component in components:
+            i,j = abu.s2itup(component)
+            label = kwargs.pop('label',"%s $_{%s}$" % (self.get_letter('vvdos'),component))
+            if self.tau_temp: label += r" $\tau_T$ = %dK" % self.tau_temp
+            ax.plot(wmesh,self.kernel[i,j,:],label=label,**kwargs)
         ax.set_xlabel('Energy (eV)',fontsize=fontsize)
         if show_fermi: ax.axvline(self.fermi)
 
@@ -489,6 +514,24 @@ class TransportResultRobot():
         """
         with open(filename,'wb') as f:
             pickle.dump(self,f)
+
+    def plot_kernel_ax(self,ax,legend=True,components=('xx',),fontsize=8,erange=None,**kwargs):
+        """
+        Plot the vvdos for all the results in the robot
+        """
+        from matplotlib import pyplot as plt
+        colormap = kwargs.pop('colormap','plasma')
+        cmap = plt.get_cmap(colormap)
+
+        #set erange
+        erange = erange or self.erange
+        if erange is not None: ax.set_xlim(erange)
+
+        for result in self.results:
+            result.plot_kernel_ax(ax,fontsize=fontsize,components=components,**kwargs)
+        if legend: ax.legend(loc="best", shadow=True, fontsize=fontsize)
+
+
 
     def plot_vvdos_ax(self,ax,legend=True,components=('xx',),fontsize=8,erange=None,**kwargs):
         """

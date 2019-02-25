@@ -31,7 +31,7 @@ eV_to_K = eV_Ha * Ha_K
 # 1 Hartree, in THz
 Ha_THz = 6579.683920722
 # 1 eV, in THz
-eV_THz = eV_Ha * Ha_THz
+eV_THz = eV_to_THz = eV_Ha * Ha_THz
 # 1 eV, in cm-1
 eV_to_cm1 = 8065.5440044136285
 # 1 Hartree, in J
