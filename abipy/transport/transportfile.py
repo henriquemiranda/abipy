@@ -6,8 +6,10 @@ import pymatgen.core.units as units
 import abipy.core.abinit_units as abu
 
 from monty.functools import lazy_property
+from monty.string import marquee
 from abipy.core.mixins import AbinitNcFile, Has_Header, Has_Structure, Has_ElectronBands, NotebookWriter
 from abipy.electrons.ebands import ElectronsReader
+from abipy.tools.plotting import add_fig_kwargs, get_ax_fig_plt
 from .result import TransportResult, TransportResultRobot
 
 __all__ = [
@@ -50,12 +52,13 @@ class TransportFile(AbinitNcFile, Has_Header, Has_Structure, Has_ElectronBands):
         od = self.get_ebands_params()
         return od
 
-    def get_boltztrap_result(self,itemp=None,el_temp=300):
+    def get_transport_result(self,itemp=None,el_temp=300):
         """
-        Get one instance of TransportResult according to itemp
+        Get one instance of TransportResult according to a temperature
 
         Args:
             itemp: the index of the temperature from which to create the TransportResult class
+                   if None, read the transport value without tau
             el_temp: temperature to use in the Fermi integrations
         """
         reader = self.reader
@@ -65,8 +68,7 @@ class TransportFile(AbinitNcFile, Has_Header, Has_Structure, Has_ElectronBands):
             wmesh, vvdos = reader.read_vvdos()
             tau_temp = None
         else:
-            wmesh, vvdos_tau = reader.read_vvdos_tau()
-            vvdos = vvdos_tau[itemp]
+            wmesh, vvdos = reader.read_vvdos_tau(itemp)
             tau_temp = reader.tmesh[itemp]
             el_temp = tau_temp
 
@@ -74,14 +76,79 @@ class TransportFile(AbinitNcFile, Has_Header, Has_Structure, Has_ElectronBands):
         #self.nsppol
         dos = dos[0]
         vvdos = vvdos[:,:,0]
-        return TransportResult(wmesh,dos,vvdos,self.fermi,el_temp,self.volume,self.nelect,tau_temp=tau_temp,nsppol=1,margin=0.1)
 
-    def get_boltztrap_results(self):
+        tr = TransportResult(wmesh,wmesh,dos,vvdos,self.fermi,el_temp,self.volume,self.nelect,tau_temp=tau_temp,nsppol=reader.nsppol)
+        tr._L0,tr._L1,tr._L2 = reader.read_onsager(itemp)
+        tr._sigma,tr._seebeck,tr._kappa,_ = reader.read_transport(itemp)
+        return tr
+
+    def get_all_transport_results(self):
         """
         Return multiple instances of TransportResults from the data in the TRANSPORT.nc file
         """
-        results = [self.get_boltztrap_result(itemp=itemp) for itemp in [None]+list(range(self.ntemp))]
+        results = [self.get_transport_result(itemp=itemp) for itemp in list(range(self.ntemp))]
         return TransportResultRobot(results)
+
+    def plot_mobility(self,ax=None,**kwargs):
+        """
+        Read the Mobility from the netcdf file and plot it
+        """
+        ax, fig, plt = get_ax_fig_plt(ax=ax)
+        colormap = kwargs.pop('colormap','plasma')
+        cmap = plt.get_cmap(colormap)
+        for itemp in range(self.ntemp):
+          temp = self.tmesh[itemp]
+          wmesh, mu = self.reader.read_mobility(0,itemp,'xx',0)
+          ax.plot(wmesh,mu,c=cmap(itemp/self.ntemp),label='T = %dK'%temp)
+        ax.set_xlabel('Fermi level (eV)')
+        ax.set_ylabel('mobility $\mu(\epsilon_F)$ [cm$^2$/Vs]')
+        ax.set_yscale('log')
+        plt.legend()
+        return fig
+
+    def get_mobility_mu(self,eh,itemp,component='xx',ef=None,spin=0):
+        """
+        Get the value of the mobility at a chemical potential ef
+
+          Arguments:
+            itemp : Index of the temperature.
+            ef : Value of the doping in eV. The default None uses the chemical potential at the temperature
+        """
+        from scipy import interpolate
+        if ef is None: ef = self.reader.read_value('transport_mu_e')[itemp]
+        wmesh, mobility = self.reader.read_mobility(eh,itemp,component,spin)
+        f = interpolate.interp1d(wmesh,mobility)
+        return f(ef)
+
+    def __str__(self):
+        """String representation"""
+        return self.to_string()
+
+    def to_string(self,verbose=0):
+        """String representation"""
+        lines = []; app = lines.append
+
+        app(marquee("File Info", mark="="))
+        app(self.filestat(as_string=True))
+        app("")
+        app(self.structure.to_string(verbose=verbose, title="Structure"))
+        app("")
+        app(self.ebands.to_string(with_structure=False, verbose=verbose, title="KS Electron Bands"))
+        app("")
+
+        # Transport section.
+        app(marquee("Transport calculation", mark="="))
+        app("Number of temperatures: %d"%self.ntemp)
+        app("Mobility:")
+        app("electrons: %lf"%self.get_mobility_mu(0,5))
+        app("holes:     %lf"%self.get_mobility_mu(1,5))
+        return "\n".join(lines)
+
+    def yield_figs(self):
+        """
+        Return figures plotting the transport data
+        """
+        return self.plot_mobility()
 
     def close(self):
         """Close the file."""
@@ -97,6 +164,7 @@ class TransportReader(ElectronsReader):
         super(TransportReader, self).__init__(filepath)
         ktmesh = self.read_value("kTmesh")
         self.tmesh = ktmesh / abu.kb_HaK
+        self.nsppol = self.read_dimvalue('nsppol')
 
     def read_vvdos(self):
         """
@@ -109,11 +177,10 @@ class TransportReader(ElectronsReader):
         vals = self.read_variable("vvdos_mesh")
         wmesh = vals[:]
         vals = self.read_variable("vvdos_vals")
-        nsppol = vals.shape[1]-1
         vvdos = vals[:,:,1:,:]
         return wmesh, vvdos
 
-    def read_vvdos_tau(self):
+    def read_vvdos_tau(self,itemp):
         """
         Read the group velocity density of states times lifetime for different temperatures
         The vvdos_tau array has 4 dimensions (ntemp,9,nsppolplus1,nw)
@@ -122,11 +189,9 @@ class TransportReader(ElectronsReader):
           3. the spin polarization + 1 for the sum
           4. the number of frequencies
         """
-        vals = self.read_variable("vvdos_mesh")
-        wmesh = vals[:]
+        wmesh = self.read_variable("vvdos_mesh")[:]*abu.Ha_eV
         vals = self.read_variable("vvdos_tau")
-        nsppol = vals.shape[1]-1
-        vvdos_tau = vals[:,:,:,1:,:]/(2*abu.Ha_s)
+        vvdos_tau = vals[itemp,:,:,1:,:]/(2*abu.Ha_s)
         return wmesh, vvdos_tau
 
     def read_dos(self):
@@ -141,6 +206,32 @@ class TransportReader(ElectronsReader):
         idos = vals[1:,:]
         return wmesh, dos, idos
 
+    def read_onsager(self,itemp):
+        """
+        Read the onsager coeficients computed in the transport driver in Abinit
+        """
+        L0 = np.moveaxis(self.read_variable("L0")[itemp,:],[0,1,2,3],[3,2,0,1])
+        L1 = np.moveaxis(self.read_variable("L1")[itemp,:],[0,1,2,3],[3,2,0,1])
+        L2 = np.moveaxis(self.read_variable("L2")[itemp,:],[0,1,2,3],[3,2,0,1])
+        return L0,L1,L2
+
+    def read_transport(self,itemp):
+        sigma   = np.moveaxis(self.read_variable("sigma")[itemp,:],   [0,1,2,3],[3,2,0,1])
+        kappa   = np.moveaxis(self.read_variable("kappa")[itemp,:],   [0,1,2,3],[3,2,0,1])
+        seebeck = np.moveaxis(self.read_variable("seebeck")[itemp,:], [0,1,2,3],[3,2,0,1])
+        pi      = np.moveaxis(self.read_variable("pi")[itemp,:],      [0,1,2,3],[3,2,0,1])
+        return sigma, kappa, seebeck, pi
+
+    def read_mobility(self,eh,itemp,component,spin):
+        """
+        Read mobility from the TRANSPORT.nc file
+        The mobility is computed separately for electrons and holes.
+        """
+        i,j = abu.s2itup(component)
+        wvals = self.read_variable("vvdos_mesh")
+        mobility = self.read_variable("mobility")[eh,itemp,i,j,spin,:]
+        return wvals,mobility
+
     def read_evk_diagonal(self):
         """
         Read the group velocities i.e the diagonal matrix elements.
@@ -149,6 +240,3 @@ class TransportReader(ElectronsReader):
         vels = self.read_variable("vred_diagonal")
         # Cartesian? Ha --> eV?
         return vels * (units.Ha_to_eV / units.bohr_to_ang)
-
-    def read_evk_skbb(self):
-        return self.read_value("h1_matrix", cplx_mode="cplx") * (units.Ha_to_eV / units.bohr_to_ang)
