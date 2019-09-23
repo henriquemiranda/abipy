@@ -1,5 +1,7 @@
 # coding: utf-8
-"""GSR.nc_ file."""
+"""
+Interface to the GSR.nc_ file storing the Ground-state results and the electron band structure.
+"""
 from __future__ import print_function, division, unicode_literals, absolute_import
 
 import numpy as np
@@ -7,7 +9,7 @@ import pandas as pd
 import pymatgen.core.units as units
 import abipy.core.abinit_units as abu
 
-from collections import OrderedDict, Iterable, defaultdict
+from collections import OrderedDict, defaultdict
 from tabulate import tabulate
 from monty.string import is_string, list_strings, marquee
 from monty.termcolor import cprint

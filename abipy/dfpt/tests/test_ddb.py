@@ -189,10 +189,10 @@ class DdbTest(AbipyTest):
                 num_cpus=2, verbose=2)
         assert c.phdoses and c.plotter is not None
 
-        # Execute anaddb to compute the interatomic forces.
+        # Execute anaddb to compute the interatomic force constants.
         ifc = ddb.anaget_ifc()
         str(ifc); repr(ifc)
-        #assert ifc.to_string(verbose=2)
+        assert ifc.to_string(verbose=2)
         assert ifc.structure == ddb.structure
         assert ifc.number_of_atoms == len(ddb.structure)
 
@@ -200,6 +200,14 @@ class DdbTest(AbipyTest):
             assert ifc.plot_longitudinal_ifc(show=False)
             assert ifc.plot_longitudinal_ifc_short_range(show=False)
             assert ifc.plot_longitudinal_ifc_ewald(show=False)
+
+        # Test get_coarse.
+        coarse_ddb = ddb.get_coarse([2, 2, 2])
+        # Check whether anaddb can read the coarse DDB.
+        coarse_phbands_file, coarse_phdos_file = coarse_ddb.anaget_phbst_and_phdos_files(nqsmall=4, ndivsm=1, verbose=1)
+        coarse_phbands_file.close()
+        coarse_phdos_file.close()
+        coarse_ddb.close()
 
         ddb.close()
 
@@ -260,8 +268,10 @@ class DdbTest(AbipyTest):
             assert becs.to_string(verbose=2)
             for arr, z in zip(becs.values, becs.zstars):
                 self.assert_equal(arr, z)
-            df = becs.get_voigt_dataframe(select_symbols="O")
+            df = becs.get_voigt_dataframe(view="all", select_symbols="O", verbose=1)
             assert len(df) == 2
+            # Equivalent atoms should have same determinant.
+            self.assert_almost_equal(df["determinant"].values, df["determinant"].values[0])
 
             # get the dielectric tensor generator from anaddb
             dtg = ddb.anaget_dielectric_tensor_generator(verbose=2)
@@ -397,6 +407,7 @@ class DielectricTensorGeneratorTest(AbipyTest):
             assert d.plot_vs_w(w_min=0, w_max=None, num=10, units="cm-1", show=False)
             for comp in ["diag", "all", "diag_av"]:
                 assert d.plot_vs_w(num=10, component=comp, units="cm-1", show=False)
+            assert d.plot_all(units="mev", show=False)
 
 
 class DdbRobotTest(AbipyTest):
@@ -496,7 +507,7 @@ class PhononComputationTest(AbipyTest):
             self.assert_almost_equal(phbands.amu_symbol["B"],  phbands.amu[5.0])
 
             # Total PHDOS should integrate to 3 * natom
-            # Note that anaddb does not renormalize the DOS so we have to increate the tolerance.
+            # Note that anaddb does not renormalize the DOS so we have to increase the tolerance.
             #E       Arrays are not almost equal to 2 decimals
             #E        ACTUAL: 8.9825274146312282
             #E        DESIRED: 9

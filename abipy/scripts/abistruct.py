@@ -108,7 +108,7 @@ Usage example:
                                               print Bilbao character table.
   abistruct.py kstar FILE -k 0.25 0 0      => Read structure from FILE, print star of k-point.
   abistruct.py keq FILE -k 0.5 0 0 0 0.5 0  => Read structure from FILE, test whether k1 and k2 are
-                                               symmetry equivalent k-points.
+                                               symmetry-equivalent k-points.
 
 ###############
 # Miscelleanous
@@ -144,7 +144,9 @@ Usage example:
                                               Print info and Abinit input files. Use e.g. `-f POSCAR`
                                               to change output format. `-f None` to disable structure output.
   abistruct.py mp_pd FILE-or-elements      => Generate phase diagram with entries from the Materials Project.
-                                              Accept FILE with structure or list of elements e.g `Li-Fe-O`
+  abistruct.py mp_ebands FILE             => Fetch electron band structure from MP database. Print gaps.
+                                              Accept FILE with structure if ebands fro structure is wanted     
+                                              or mp id e.g. "mp-149 or list of elements e.g `Li-Fe-O` or chemical formula.
 
 `FILE` is any file supported by abipy/pymatgen e.g Netcdf files, Abinit input/output, POSCAR, xsf ...
 Use `abistruct.py --help` for help and `abistruct.py COMMAND --help` to get the documentation for `COMMAND`.
@@ -179,6 +181,8 @@ codes), a looser tolerance of 0.1 (the value used in Materials Project) is often
     spgopt_parser.add_argument('--angle-tolerance', default=5.0, type=float,
         help="angle_tolerance (float): Angle tolerance for symmetry finding. Default: 5.0")
     spgopt_parser.add_argument("--no-time-reversal", default=False, action="store_true", help="Don't use time-reversal.")
+    spgopt_parser.add_argument("--site-symmetry", default=False, action="store_true",
+                               help="Show site symmetries i.e. the point group operations that leave the site invariant.")
 
     # Parent parser for common options.
     copts_parser = argparse.ArgumentParser(add_help=False)
@@ -225,9 +229,11 @@ codes), a looser tolerance of 0.1 (the value used in Materials Project) is often
         help="Extract/Compute Abinit space group from file with structure.")
     p_abispg.add_argument("-t", "--tolsym", type=float, default=None, help="""\
 Gives the tolerance on the atomic positions (reduced coordinates), primitive vectors, or magnetization,
-to be considered equivalent, thanks to symmetry operations. This is used in the recognition of the set
+to be considered equivalent, thanks to symmetry operations. This value is used by ABINIT in the recognition of the set
 of symmetries of the system, or the application of the symmetry operations to generate from a reduced set of atoms,
-the full set of atoms. Note that a value larger than 0.01 is considered to be unacceptable.""")
+The internal default is 1e-8. Setting tolsym to a value larger than 1e-8 will make Abinit detect the spacegroup within
+this tolerance and re-symmetrize the input structure. This option is useful if the structure has been taken from a CIF
+file that does not have enough significant digits.""")
     p_abispg.add_argument("-d", "--diff-mode", type=str, default="table", choices=["table", "diff"],
         help="Select diff output format.")
 
@@ -279,6 +285,18 @@ Has to be all integers. Several options are possible:
     p_proto.add_argument("--ltol", default=0.2, type=float, help="fractional length tolerance.")
     p_proto.add_argument("--stol", default=0.3, type=float, help="site tolerance.")
     p_proto.add_argument("--angle-tol", default=5, type=float, help="angle tolerance.")
+
+    # Subparser for wyckoff.
+    p_wyckoff = subparsers.add_parser('wyckoff', parents=[copts_parser, spgopt_parser, path_selector],
+            help="Print wyckoff positions. WARNING: still under development!")
+    p_wyckoff.add_argument("--refine", default=False, action="store_true",
+                            help="Use spglib to refine structure before computation")
+
+    # Subparser for tensor_site.
+    p_tensor_site = subparsers.add_parser('tensor_site', parents=[copts_parser, spgopt_parser, path_selector],
+            help="Print symmetry properties of tensors due to site-symmetries. WARNING: still under development!")
+    p_tensor_site.add_argument("--refine", default=False, action="store_true",
+                                help="Use spglib to refine structure before computation")
 
     # Subparser for neighbors.
     p_neighbors = subparsers.add_parser('neighbors', parents=[copts_parser, path_selector],
@@ -410,7 +428,7 @@ closest points in this particular structure. This is usually what you want in a 
     p_mpsearch = subparsers.add_parser('mp_search', parents=[mp_rest_parser, copts_parser, nb_parser],
         help="Get structure from the pymatgen database. Requires internet connection and PMG_MAPI_KEY")
     p_mpsearch.add_argument("chemsys_formula_id", type=str, default=None,
-        help="A chemical system (e.g., Li-Fe-O), or formula (e.g., Fe2O3) or materials_id (e.g., mp-1234).")
+        help="A chemical system (e.g., Li-Fe-O), or formula (e.g., Fe2O3) or materials_id (e.g., mp-149).")
     p_mpsearch.add_argument("-s", "--select-spgnum", type=int, default=None,
         help="Select structures with this space group number.")
     add_format_arg(p_mpsearch, default="abivars")
@@ -425,6 +443,13 @@ closest points in this particular structure. This is usually what you want in a 
         help="""Whether unstable phases will be plotted as
 well as red crosses. If a number > 0 is entered, all phases with
 ehull < show_unstable will be shown.""")
+
+    # Subparser for mp_ebands command.
+    p_mp_ebands = subparsers.add_parser('mp_ebands', parents=[copts_parser, mp_rest_parser],
+        help="Get structure from the pymatgen database. Export to format. Requires internet connection and PMG_MAPI_KEY.")
+    p_mp_ebands.add_argument("chemsys_formula_id", type=str, default=None,
+        help="A chemical system (e.g., Li-Fe-O), or formula (e.g., Fe2O3) or materials_id (e.g., mp-149).")
+    #add_format_arg(p_mp_ebands, default="cif")
 
     # Subparser for cod_search command.
     p_codsearch = subparsers.add_parser('cod_search', parents=[copts_parser, nb_parser],
@@ -483,26 +508,30 @@ def main():
     if options.command == "spglib":
         structure = abilab.Structure.from_file(options.filepath)
         print(structure.spget_summary(symprec=options.symprec, angle_tolerance=options.angle_tolerance,
-                                      verbose=options.verbose))
-        #remove_equivalent_atoms(structure)
+                                      site_symmetry=options.site_symmetry, verbose=options.verbose))
 
     elif options.command == "abispg":
         structure = abilab.Structure.from_file(options.filepath)
         check_ordered_structure(structure)
-        spgrp = structure.abi_spacegroup
+        abi_spg = structure.abi_spacegroup
 
-        if spgrp is not None:
+        if abi_spg is not None and options.tolsym is None:
             print(structure.spget_summary(verbose=options.verbose))
         else:
-            # Here we compare Abinit wrt spglib. If spgrp is None, we create a temporary
+            # Here we compare Abinit wrt spglib. If abi_spg is None, we create a temporary
             # task to run the code in dry-run mode.
-            print("FILE does not contain Abinit symmetry operations.")
-            print("Calling Abinit in --dry-run mode with chkprim = 0 to get space group.")
+            if abi_spg is None:
+                print("FILE does not contain Abinit symmetry operations.")
+            cprint("Calling Abinit in --dry-run mode with chkprim = 0 to get space group.")
+            if options.tolsym is not None and options.tolsym > 1e-8:
+                cprint("Crystal structure will be re-symmetrized by Abinit with tolsym: %s" % options.tolsym, "yellow")
+
             from abipy.data.hgh_pseudos import HGH_TABLE
             gsinp = factories.gs_input(structure, HGH_TABLE, spin_mode="unpolarized")
             gsinp["chkprim"] = 0
             abistructure = gsinp.abiget_spacegroup(tolsym=options.tolsym)
             print(abistructure.spget_summary(verbose=options.verbose))
+            print("")
 
             diff_structures([structure, abistructure], mode=options.diff_mode,
                             headers=["Input structure", "After Abinit symmetrization"], fmt="abivars")
@@ -634,7 +663,7 @@ def main():
         dlist = m.get_prototypes(structure)
         if not dlist:
             cprint("Cannot find AFLOW prototype for structure.")
-            print(structure.to_string(verbose=option.verbose))
+            print(structure.to_string(verbose=options.verbose))
             return 1
         else:
             cprint("Found %d matches" % len(dlist), "green")
@@ -647,6 +676,26 @@ def main():
                 print("AFLOW url: %s\n" % url)
             if not options.verbose:
                 print("Use --verbose to increase output level")
+
+    elif options.command == "wyckoff":
+        structure = abilab.Structure.from_file(options.filepath)
+        if options.refine:
+            print("Refining structure with symprec: %s, angle_tolerance: %s" % (options.symprec, options.angle_tolerance))
+            structure = structure.refine(symprec=options.symprec, angle_tolerance=options.angle_tolerance)
+        print(structure.spget_summary(verbose=options.verbose))
+        ss = structure.site_symmetries
+        df = ss.get_wyckoff_dataframe(verbose=options.verbose)
+        abilab.print_dataframe(df, title="\nWyckoff positions in reduced coordinates.")
+
+    elif options.command == "tensor_site":
+        structure = abilab.Structure.from_file(options.filepath)
+        if options.refine:
+            print("Refining structure with symprec: %s, angle_tolerance: %s" % (options.symprec, options.angle_tolerance))
+            structure = structure.refine(symprec=options.symprec, angle_tolerance=options.angle_tolerance)
+        print(structure.spget_summary(verbose=options.verbose))
+        ss = structure.site_symmetries
+        df = ss.get_tensor_rank2_dataframe(verbose=options.verbose)
+        abilab.print_dataframe(df, title="\nTensor components in reduced coordinates (rank 2, symmetric)")
 
     elif options.command == "neighbors":
         abilab.Structure.from_file(options.filepath).print_neighbors(radius=options.radius)
@@ -734,8 +783,11 @@ def main():
 
     #elif options.command == "kmesh_jhu":
     #    structure = abilab.Structure.from_file(options.filepath)
-    #    ksampling = structure.ksampling_from_jhudb(kppra=1000)
-    #    #print(ksampling)
+    #    from pymatgen.ext.jhu import get_kpoints
+    #    kpoints = get_kpoints(structure, min_distance=0, min_total_kpoints=1,
+    #                           kppra=None, gap_distance=7, remove_symmetry=None,
+    #                           include_gamma="auto", header="simple", incar=None)
+    #    #print(kpoints)
 
     elif options.command == "lgk":
         structure = abilab.Structure.from_file(options.filepath)
@@ -833,6 +885,34 @@ def main():
             pdr = rest.get_phasediagram_results(elements)
             pdr.print_dataframes(verbose=options.verbose)
             pdr.plot(show_unstable=options.show_unstable)
+
+    elif options.command == "mp_ebands":
+        if os.path.exists(options.chemsys_formula_id):
+            mp = abilab.mp_match_structure(options.chemsys_formula_id)
+            for mpid in mp.ids:
+                ebands = abilab.ElectronBands.from_mpid(mpid, api_key=options.mapi_key, endpoint=options.endpoint)
+                print(ebands)
+        else:
+            if options.chemsys_formula_id.startswith("mp-"):
+                # Assume valid mp identifier.
+                mpid = options.chemsys_formula_id
+                ebands = abilab.ElectronBands.from_mpid(mpid, api_key=options.mapi_key, endpoint=options.endpoint)
+                print(ebands)
+            else:
+                mp = abilab.mp_search(options.chemsys_formula_id)
+                if not mp.structures:
+                    cprint("No structure found in Materials Project database", "yellow")
+                    return 1
+
+                for mpid, structure in zip(mp.ids, mp.structures):
+                    if structure is None:
+                        cprint("ignoring mpid %s because cannot find structure" % mpid, "red")
+                        continue
+                    ebands = abilab.ElectronBands.from_mpid(mpid, api_key=options.mapi_key, endpoint=options.endpoint)
+                    if ebands is None:
+                        cprint("Cannot get ebands for structure:\n%s" % str(structure), "red")
+                    else:
+                        print(ebands)
 
     elif options.command == "cod_search":
         cod = abilab.cod_search(options.formula, primitive=options.primitive)

@@ -212,6 +212,9 @@ class Structure(pymatgen.Structure, NotebookWriter):
 
         Returns: |Structure| object
         """
+        #zipped_exts = (".bz2", ".gz", ".z"):
+        root, ext = os.path.splitext(filepath)
+
         if filepath.endswith("_HIST.nc"):
             # Abinit history file. In this case we return the last structure!
             # Note that HIST does not follow the etsf-io conventions.
@@ -224,7 +227,15 @@ class Structure(pymatgen.Structure, NotebookWriter):
             ncfile, closeit = as_etsfreader(filepath)
 
             new = ncfile.read_structure(cls=cls)
-            new.set_abi_spacegroup(AbinitSpaceGroup.from_file(ncfile))
+            new.set_abi_spacegroup(AbinitSpaceGroup.from_ncreader(ncfile))
+
+            # Try to read indsym from file (added in 8.9.x)
+            indsym = ncfile.read_value("indsym", default=None)
+            if indsym is not None:
+                # Fortran --> C convention
+                indsym[:, :, 3] -= 1
+                new.indsym = indsym
+
             if closeit: ncfile.close()
 
         elif filepath.endswith(".abi") or filepath.endswith(".in"):
@@ -244,7 +255,7 @@ class Structure(pymatgen.Structure, NotebookWriter):
                 if out.initial_structures: return out.initial_structure
             raise ValueError("Cannot find structure in Abinit output file `%s`" % filepath)
 
-        elif filepath.endswith("_DDB"):
+        elif filepath.endswith("_DDB") or root.endswith("_DDB"):
             # DDB file.
             from abipy.abilab import abiopen
             with abiopen(filepath) as abifile:
@@ -593,8 +604,7 @@ class Structure(pymatgen.Structure, NotebookWriter):
 
         return("\n".join(lines))
 
-    def get_conventional_standard_structure(self, international_monoclinic=True,
-                                            symprec=1e-3, angle_tolerance=5):
+    def get_conventional_standard_structure(self, international_monoclinic=True, symprec=1e-3, angle_tolerance=5):
         """
         Gives a structure with a conventional cell according to certain
 	standards. The standards are defined in :cite:`Setyawan2010`
@@ -627,6 +637,18 @@ class Structure(pymatgen.Structure, NotebookWriter):
 
         return self.__class__.as_structure(standardized_structure)
 
+    def refine(self, symprec=1e-3, angle_tolerance=5):
+        """
+        Get the refined structure based on detected symmetry. The refined
+        structure is a *conventional* cell setting with atoms moved to the
+        expected symmetry positions.
+
+        Returns: Refined structure.
+        """
+        sym_finder = SpacegroupAnalyzer(structure=self, symprec=symprec, angle_tolerance=angle_tolerance)
+        new = sym_finder.get_refined_structure()
+        return self.__class__.as_structure(new)
+
     def abi_sanitize(self, symprec=1e-3, angle_tolerance=5, primitive=True, primitive_standard=False):
         """
         Returns a new structure in which:
@@ -647,8 +669,7 @@ class Structure(pymatgen.Structure, NotebookWriter):
 
         # Refine structure
         if symprec is not None and angle_tolerance is not None:
-            sym_finder = SpacegroupAnalyzer(structure=structure, symprec=symprec, angle_tolerance=angle_tolerance)
-            structure = sym_finder.get_refined_structure()
+            structure = structure.refine(symprec=symprec, angle_tolerance=angle_tolerance)
 
         # Convert to primitive structure.
         if primitive:
@@ -756,8 +777,12 @@ class Structure(pymatgen.Structure, NotebookWriter):
             ``namedtuple`` (irred_pos, eqmap, spgdata) with the following attributes::
 
                 * irred_pos: array giving the position of the i-th irred atom in the structure.
-                    The number of irred atoms is len(irred_pos)
-                *   eqmap: Mapping irred atom position --> list with positions of symmetrical atoms
+                    The number of irred atoms is len(irred_pos).
+                *   eqmap: Mapping irred atom position --> list with positions of symmetrical atoms.
+                *   wyckoffs: Wyckoff letters.
+                *   wyck_mult: Array with Wyckoff multiplicity.
+                *   wyck_labels: List of labels with Wyckoff multiplicity and letter e.g. 3a
+                *   site_labels: Labels for each site in computed from element symbol and wyckoff positions e.g Si2a
                 *   spgdata: spglib dataset with additional data reported by spglib_.
 
          :Example:
@@ -765,9 +790,15 @@ class Structure(pymatgen.Structure, NotebookWriter):
             for irr_pos in irred_pos:
                 eqmap[irr_pos]   # List of symmetrical positions associated to the irr_pos atom.
         """
+        natom = len(self)
         spgan = SpacegroupAnalyzer(self, symprec=symprec, angle_tolerance=angle_tolerance)
         spgdata = spgan.get_symmetry_dataset()
         equivalent_atoms = spgdata["equivalent_atoms"]
+        wyckoffs = np.array(spgdata["wyckoffs"])
+
+        wyck_mult = [np.count_nonzero(equivalent_atoms == equivalent_atoms[i]) for i in range(natom)]
+        wyck_mult = np.array(wyck_mult, dtype=np.int)
+
         irred_pos = []
         eqmap = collections.defaultdict(list)
         for pos, eqpos in enumerate(equivalent_atoms):
@@ -781,16 +812,28 @@ class Structure(pymatgen.Structure, NotebookWriter):
             eqmap[eqpos] = np.array(eqmap[eqpos], dtype=np.int)
 
         if printout:
-            print("Found %d inequivalent position(s)." % len(irred_pos))
+            print("Found %d inequivalent position(s):" % len(irred_pos))
             for i, irr_pos in enumerate(sorted(eqmap.keys())):
-                print("Irred_Site: %s" % str(self[irr_pos]))
+                print("Wyckoff position: (%s%s)" % (wyck_mult[irr_pos], wyckoffs[irr_pos]))
+                print("\t[%d]: %s" % (irr_pos, repr(self[irr_pos])))
                 for eqind in eqmap[irr_pos]:
                     if eqind == irr_pos: continue
-                    print("\tSymEq: %s" % str(self[eqind]))
+                    print("\t[%d]: %s" % (eqind, repr(self[eqind])))
+            print("")
 
-        return dict2namedtuple(irred_pos=irred_pos, eqmap=eqmap, spgdata=spgdata)
+        # Build list of labels from multiplicity and name: e.g. 3a
+        wyck_labels = np.array(["%s%s" % (wmul, wsymb) for wsymb, wmul in zip(wyckoffs, wyck_mult)])
 
-    def spget_summary(self, symprec=1e-3, angle_tolerance=5, verbose=0):
+        # Build labels for sites with chemical element.
+        site_labels = []
+        for i, (site, wsymb, wmul) in enumerate(zip(self, wyckoffs, wyck_mult)):
+            site_labels.append("%s%d (%s%s)" % (site.specie.symbol, i, wmul, wsymb))
+
+        return dict2namedtuple(irred_pos=irred_pos, eqmap=eqmap, wyckoffs=wyckoffs,
+                               wyck_mult=wyck_mult, wyck_labels=wyck_labels,
+                               site_labels=np.array(site_labels), spgdata=spgdata)
+
+    def spget_summary(self, symprec=1e-3, angle_tolerance=5, site_symmetry=False, verbose=0):
         """
         Return string with full information about crystalline structure i.e.
         space group, point group, wyckoff positions, equivalent sites.
@@ -798,6 +841,7 @@ class Structure(pymatgen.Structure, NotebookWriter):
         Args:
             symprec (float): Symmetry precision for distance.
             angle_tolerance (float): Tolerance on angles.
+            site_symmetry: True to show site symmetries i.e. the point group operations that leave the site invariant.
             verbose (int): Verbosity level.
         """
         spgan = SpacegroupAnalyzer(self, symprec=symprec, angle_tolerance=angle_tolerance)
@@ -815,7 +859,7 @@ class Structure(pymatgen.Structure, NotebookWriter):
         outs.append("angles: " + " ".join([to_s(i).rjust(10)
                                            for i in self.lattice.angles]))
         app("")
-        app("Spglib space group info (magnetic symmetries are not taken into account).")
+        app("Spglib space group info (magnetic symmetries not taken into account).")
         app("Spacegroup: %s (%s), Hall: %s, Abinit spg_number: %s" % (
              spgan.get_space_group_symbol(), spgan.get_space_group_number(), spgan.get_hall(), str(abispg_number)))
         app("Crystal_system: %s, Lattice_type: %s, Point_group: %s" % (
@@ -823,15 +867,25 @@ class Structure(pymatgen.Structure, NotebookWriter):
         app("")
 
         wickoffs, equivalent_atoms = spgdata["wyckoffs"], spgdata["equivalent_atoms"]
-        table = [["Idx", "Symbol", "Reduced_Coords", "Wyck", "EqIdx"]]
+        header = ["Idx", "Symbol", "Reduced_Coords", "Wyckoff", "EqIdx"]
+
+        if site_symmetry:
+            header.append("site_symmetry")
+            sitesym_labels = self.spget_site_symmetries()
+
+        table = [header]
         for i, site in enumerate(self):
-            table.append([
+            mult = np.count_nonzero(equivalent_atoms == equivalent_atoms[i])
+            row = [
                 i,
                 site.species_string,
                 "%+.5f %+.5f %+.5f" % tuple(site.frac_coords),
-                "%s" % wickoffs[i],
+                "(%s%s)" % (mult, wickoffs[i]),
                 "%d" % equivalent_atoms[i],
-            ])
+            ]
+            if site_symmetry: row.append(sitesym_labels[i])
+
+            table.append(row)
 
         from tabulate import tabulate
         app(tabulate(table, headers="firstrow"))
@@ -888,23 +942,74 @@ class Structure(pymatgen.Structure, NotebookWriter):
                               "Use `overwrite=True` to allow modification."))
 
         msg = ("Structure object does not have symmetry operations computed from Abinit.\n"
-               "Will call spglib to get symmetry operations.")
+               "Calling spglib to get symmetry operations.")
         cprint(msg, "magenta")
 
         spglib_data = SpacegroupAnalyzer(self).get_symmetry_dataset()
         spgid = spglib_data["number"]
         symrel, tnons = spglib_data["rotations"], spglib_data["translations"]
-        symafm = [1] * len(symrel)  # TODO: Anti-ferromagnetic symmetries are not supported by spglib
+        # TODO: Anti-ferromagnetic symmetries are not supported by spglib
+        symafm = [1] * len(symrel)
 
         abispg = AbinitSpaceGroup(spgid, symrel, tnons, symafm, has_timerev, inord="C")
         self.set_abi_spacegroup(abispg)
 
         return abispg
 
+    @property
+    def indsym(self):
+        """
+        Compute indsym (natom, nsym, 4) array.
+
+        For each isym,iatom, the fourth element is label of atom into
+        which iatom is sent by INVERSE of symmetry operation isym;
+        first three elements are the primitive translations which must be
+        subtracted after the transformation to get back to the original unit cell (see symatm.F90).
+        """
+        if getattr(self, "_indsym", None) is not None: return self._indsym
+        if not self.has_abi_spacegroup:
+            self.spgset_abi_spacegroup(has_timerev=True, overwrite=False)
+
+        from abipy.core.symmetries import indsym_from_symrel
+        self._indsym = indsym_from_symrel(self.abi_spacegroup.symrel, self.abi_spacegroup.tnons, self, tolsym=1e-8)
+        return self._indsym
+
+    @indsym.setter
+    def indsym(self, indsym):
+        """Set indsym array."""
+        if getattr(self, "_indsym", None) is not None:
+            cprint("structure.indsym is already set!", "yellow")
+        self._indsym = indsym
+
+    @lazy_property
+    def site_symmetries(self):
+        from abipy.core.site_symmetries import SiteSymmetries
+        return SiteSymmetries(self)
+
+    # TODO: site_symmetry or spget_site_symmetries?
+    def spget_site_symmetries(self):
+        import spglib
+        indsym = self.indsym
+        symrel, symafm = self.abi_spacegroup.symrel, self.abi_spacegroup.symafm
+        nsym = len(symrel)
+        sitesym_labels = []
+        for iatom, site in enumerate(self):
+            rotations = [symrel[isym] for isym in range(nsym) if
+                         indsym[iatom, isym, 3] == iatom and symafm[isym] == +1]
+            # Passing a 0-length rotations list to spglib can segfault.
+            herm_symbol, ptg_num = "1", 1
+            if len(rotations) != 0:
+                herm_symbol, ptg_num, trans_mat = spglib.get_pointgroup(rotations)
+
+            sitesym_labels.append("%s (#%d,nsym:%d)" % (herm_symbol.strip(), ptg_num, len(rotations)))
+
+        return sitesym_labels
+
     def abiget_spginfo(self, tolsym=None, pre=None):
         """
 	Call Abinit to get spacegroup information.
-	Return dictionary with e.g. {'bravais': 'Bravais cF (face-center cubic)', 'spg_number': 227, 'spg_symbol': 'Fd-3m'}.
+	Return dictionary with e.g.
+        {'bravais': 'Bravais cF (face-center cubic)', 'spg_number': 227, 'spg_symbol': 'Fd-3m'}.
 
 	Args:
             tolsym: Abinit tolsym input variable. None correspondes to the default value.
@@ -924,7 +1029,7 @@ class Structure(pymatgen.Structure, NotebookWriter):
         Print results.
         """
         print(" ")
-        print("Finding neighbors for each atom in the unit cell, out to a distance %s [Angstrom]" % radius)
+        print("Finding neighbors for each atom in the unit cell, out to a distance %s (Angstrom)" % radius)
         print(" ")
 
         ns = self.get_all_neighbors(radius, include_index=False)
@@ -1360,7 +1465,7 @@ class Structure(pymatgen.Structure, NotebookWriter):
 
     #    return max_overlap, ovlp_sites
 
-    def displace(self, displ, eta, frac_coords=True):
+    def displace(self, displ, eta, frac_coords=True, normalize=True):
         """
         Displace the sites of the structure along the displacement vector displ.
 
@@ -1386,8 +1491,9 @@ class Structure(pymatgen.Structure, NotebookWriter):
             displ = np.reshape([self.lattice.get_fractional_coords(vec) for vec in displ], (-1,3))
 
         # Normalize the displacement so that the maximum atomic displacement is 1 Angstrom.
-        dnorm = self.norm(displ, space="r")
-        displ /= np.max(np.abs(dnorm))
+        if normalize:
+            dnorm = self.norm(displ, space="r")
+            displ /= np.max(np.abs(dnorm))
 
         # Displace the sites.
         for i in range(len(self)):
@@ -1761,32 +1867,6 @@ class Structure(pymatgen.Structure, NotebookWriter):
             raise ValueError("Don't know how to generate string for code: `%s`" % str(fmt))
 
         return "\n".join(lines)
-
-    #def ksampling_from_jhudb(self, **kwargs):
-    #    from pymatgen.ext.jhu import get_kpoints
-    #    __doc__ = get_kpoints.__doc__
-    #    kpoints = get_kpoints(self, **kwargs)
-    #    print(kpoints)
-    #    print(kpoints.style)
-    #    print("num_kpts", kpoints.num_kpts)
-
-    #    d = {"kptopt": 0,
-    #         "kpt": kpoints.kpts,
-    #         "nkpt": kpoints.num_kpts,
-    #         #"kptnrm": kptnrm,
-    #         "wtk": kpoints.kpts_weights,
-    #         "shiftk": kpoints.kpts_shift,
-    #         "chksymbreak": 0,
-    #    }
-    #    print(d)
-
-    #    #from pymatgen.io.abinit.abiobjects import KSampling
-    #    #return KSampling(mode=KSamplingModes.automatic,
-    #    #         num_kpts= 0,
-    #    #         kpts=((1, 1, 1),),
-    #    #         kpt_shifts=(0.5, 0.5, 0.5),
-    #    #         kpts_weights=None, use_symmetries=True, use_time_reversal=True, chksymbreak=None,
-    #    #         comment=None)
 
     def calc_ksampling(self, nksmall, symprec=0.01, angle_tolerance=5):
         """

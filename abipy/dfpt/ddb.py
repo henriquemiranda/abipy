@@ -26,10 +26,11 @@ from abipy.core.kpoints import KpointList, Kpoint
 from abipy.iotools import ETSF_Reader
 from abipy.tools.numtools import data_from_cplx_mode
 from abipy.abio.inputs import AnaddbInput
-from abipy.dfpt.phonons import PhononDosPlotter, PhononBandsPlotter, InteratomicForceConstants
+from abipy.dfpt.phonons import PhononDosPlotter, PhononBandsPlotter
+from abipy.dfpt.ifc import InteratomicForceConstants
 from abipy.dfpt.elastic import ElasticData
 from abipy.core.abinit_units import phfactor_ev2units, phunit_tag
-from abipy.tools.plotting import Marker, add_fig_kwargs, get_ax_fig_plt, set_axlims
+from abipy.tools.plotting import Marker, add_fig_kwargs, get_ax_fig_plt, set_axlims, get_axarray_fig_plt
 from abipy.tools import duck
 from abipy.tools.tensors import DielectricTensor, ZstarTensor, Stress
 from abipy.abio.robots import Robot
@@ -980,12 +981,15 @@ class DdbFile(TextFile, Has_Structure, NotebookWriter):
 
         return phbst_file, phdos_file
 
-    def get_coarse(self, filepath, ngqpt_coarse):
+    def get_coarse(self, ngqpt_coarse, filepath=None):
         """
         Get a version of this file on a coarse mesh
 
         Args:
-            ngqpt: list of ngqpt indexes that must be a sub-mesh of the original ngqpt
+            ngqpt_coarse: list of ngqpt indexes that must be a sub-mesh of the original ngqpt
+            filepath: Filename for coarse DDB. If None, temporary filename is used.
+
+        Return: DdbFile on coarse mesh.
         """
         # Check if ngqpt is a sub-mesh of ngqpt
         ngqpt_fine = self.guessed_ngqpt
@@ -1007,7 +1011,11 @@ class DdbFile(TextFile, Has_Structure, NotebookWriter):
                     map_fine_to_coarse.append(n)
 
         # Write the file with a subset of q-points
-        self.write(filepath, map_fine_to_coarse)
+        if filepath is None:
+            import tempfile
+            _, filepath = tempfile.mkstemp(suffix="_DDB", text=True)
+
+        self.write(filepath, filter_blocks=map_fine_to_coarse)
         return self.__class__(filepath)
 
     def anacompare_asr(self, asr_list=(0, 2), chneut_list=(1,), dipdip=1, lo_to_splitting="automatic",
@@ -1115,7 +1123,7 @@ class DdbFile(TextFile, Has_Structure, NotebookWriter):
         """
         Invoke Anaddb to compute Phonon DOS with different q-meshes. The ab-initio dynamical matrix
         reported in the DDB_ file will be Fourier-interpolated on the list of q-meshes specified
-        by ``nqsmalls``. Useful to perform covergence studies.
+        by ``nqsmalls``. Useful to perform convergence studies.
 
         Args:
             nqsmalls: List of integers defining the q-mesh for the DOS. Each integer gives
@@ -1198,6 +1206,47 @@ class DdbFile(TextFile, Has_Structure, NotebookWriter):
             plotter.add_phdos(label="nqsmall %d" % nqsmall, phdos=phdos)
 
         return dict2namedtuple(phdoses=phdoses, plotter=plotter)
+
+    def anacompare_rifcsph(self, rifcsph_list, asr=2, chneut=1, dipdip=1, lo_to_splitting="automatic",
+                           ndivsm=20, ngqpt=None, verbose=0, mpi_procs=1):
+        """
+        Invoke anaddb to compute the phonon band structure and the phonon DOS with different
+        values of the ``asr`` input variable (acoustic sum rule treatment).
+        Build and return |PhononBandsPlotter| object.
+
+        Args:
+            rifcsph_list: List of rifcsph to analyze.
+            asr, chneut, dipdip: Anaddb input variable. See official documentation.
+            dipdip: 1 to activate treatment of dipole-dipole interaction (requires BECS and dielectric tensor).
+            lo_to_splitting: Allowed values are [True, False, "automatic"]. Defaults to "automatic"
+                If True the LO-TO splitting will be calculated if qpoint == Gamma and the non_anal_directions
+                non_anal_phfreqs attributes will be addeded to the phonon band structure.
+                "automatic" activates LO-TO if the DDB file contains the dielectric tensor and Born effective charges.
+            ndivsm: Number of division used for the smallest segment of the q-path
+            ngqpt: Number of divisions for the ab-initio q-mesh in the DDB file. Auto-detected if None (default)
+            verbose: Verbosity level.
+            mpi_procs: Number of MPI processes used by anaddb.
+
+        Return:
+            |PhononBandsPlotter| object.
+
+            Client code can use ``plotter.combiplot()`` or ``plotter.gridplot()``
+            to visualize the results.
+        """
+        phbands_plotter = PhononBandsPlotter()
+
+        for rifcsph in rifcsph_list:
+            phbst_file, _ = self.anaget_phbst_and_phdos_files(
+                nqsmall=0, ndivsm=ndivsm, asr=asr, chneut=chneut, dipdip=dipdip, dos_method="tetra",
+                lo_to_splitting=lo_to_splitting, ngqpt=ngqpt, qptbounds=None,
+                anaddb_kwargs={"rifcsph": rifcsph},
+                verbose=verbose, mpi_procs=mpi_procs, workdir=None, manager=None)
+
+            label = "rifcsph: %f" % rifcsph
+            phbands_plotter.add_phbands(label, phbst_file.phbands)
+            phbst_file.close()
+
+        return phbands_plotter
 
     def anaget_epsinf_and_becs(self, chneut=1, mpi_procs=1, workdir=None, manager=None, verbose=0):
         """
@@ -1597,31 +1646,46 @@ class Becs(Has_Structure):
         """Integration with jupyter notebooks."""
         return self.get_voigt_dataframe()._repr_html_()
 
-    def get_voigt_dataframe(self, tol=1e-3, select_symbols=None):
+    def get_voigt_dataframe(self, view="inequivalent", tol=1e-3, select_symbols=None, decimals=5, verbose=0):
         """
         Return |pandas-DataFrame| with Voigt indices as columns and natom rows.
 
         Args:
+            view: "inequivalent" to show only inequivalent atoms. "all" for all sites.
             tol: Entries are set to zero below this value
             select_symbols: String or list of strings with chemical symbols.
                 Used to select only atoms of this type.
+            decimals: Number of decimal places to round to.
+                If decimals is negative, it specifies the number of positions to the left of the decimal point.
+            verbose: Verbosity level.
         """
-        select_symbols = set(list_strings(select_symbols)) if select_symbols is not None else None
+        aview = self._get_atomview(view, select_symbols=select_symbols, verbose=verbose)
 
         columns = ["xx", "yy", "zz", "yz", "xz", "xy"]
         rows = []
-        for isite, (site, zstar) in enumerate(zip(self.structure, self.zstars)):
-            if select_symbols is not None and site.specie.symbol not in select_symbols: continue
+        for (iatom, wlabel) in zip(aview.iatom_list, aview.wyck_labels):
+            site = self.structure[iatom]
+            zstar = self.zstars[iatom]
             d = OrderedDict()
             d["element"] = site.specie.symbol
-            d["site_index"] = isite
-            d["frac_coords"] = site.frac_coords
+            d["site_index"] = iatom
+            d["frac_coords"] = np.round(site.frac_coords, decimals=decimals)
+            d["cart_coords"] = np.round(site.coords, decimals=decimals)
+            d["wyckoff"] = wlabel
             zstar = zstar.zeroed(tol=tol)
             for k, v in zip(columns, zstar.voigt):
                 d[k] = v
+            if verbose:
+                d["determinant"] = np.linalg.det(zstar)
+                d["iso"] = zstar.trace() / 3
             rows.append(d)
 
-        return pd.DataFrame(rows, index=None, columns=list(rows[0].keys()))
+        return pd.DataFrame(rows, columns=list(rows[0].keys()) if rows else None)
+
+    def check_site_symmetries(self, verbose=0):
+        from abipy.core.wyckoff import SiteSymmetries
+        ss = SiteSymmetries(self.structure)
+        return ss.check_site_symmetries(self.values, verbose=verbose)
 
 
 class DielectricTensorGenerator(Has_Structure):
@@ -1715,7 +1779,7 @@ class DielectricTensorGenerator(Has_Structure):
         app("")
         app(marquee("Oscillator strength", mark="="))
         tol = 1e-8
-        app("Real part in a.u.; 1 a.u. = 253.2638413 m3/s2. Set to zero below %.2e." % tol)
+        app("Real part in Cartesian coordinates. a.u. units; 1 a.u. = 253.2638413 m3/s2. Set to zero below %.2e." % tol)
         app(self.get_oscillator_dataframe(reim="re", tol=tol).to_string())
         if verbose:
             app("")
@@ -1746,10 +1810,15 @@ class DielectricTensorGenerator(Has_Structure):
             tol: Entries are set to zero below this value
         """
         dmap = dict(xx=(0, 0), yy=(1, 1), zz=(2, 2), yz=(1, 2), xz=(0, 2), xy=(0, 1))
+        #decimals = int(abs(np.rint(np.log10(tol))))
+        # 1 a.u. = 253.2638413 m3/s2.
+        # TODO: Use SI?
+        #fact = 253.2638413
 
         rows, index = [], []
         for nu in range(3 * len(self.structure)):
             d = {k: data_from_cplx_mode(reim, self.oscillator_strength[nu][t], tol=tol) for k, t in dmap.items()}
+            #d = {k: np.around(v * fact, decimals=decimals) for k, v in d.items()}
             rows.append(d)
             index.append(nu)
 
@@ -1759,12 +1828,11 @@ class DielectricTensorGenerator(Has_Structure):
 
     def tensor_at_frequency(self, w, gamma_ev=1e-4, units='eV'):
         """
-        Returns a |DielectricTensor| object representing
-        the dielectric tensor in atomic units at the specified frequency w.
-        Eq.(53-54) in PRB55, 10355 (1997).
+        Returns a |DielectricTensor| object representing the dielectric tensor
+        in atomic units at the specified frequency w. Eq.(53-54) in PRB55, 10355 (1997).
 
         Args:
-            w: frequency
+            w: Frequency in eV
             gamma_ev: Phonon damping factor in eV (full width). Poles are shifted by phfreq * gamma_ev.
                 Accept scalar or [nfreq] array.
             units: string specifying the units used for ph frequencies.  Possible values in
@@ -1781,10 +1849,10 @@ class DielectricTensorGenerator(Has_Structure):
         else:
             gammas = np.ones(len(self.phfreqs)) * float(gamma_ev)
 
-        t = np.zeros((3, 3))
+        t = np.zeros((3, 3),dtype=complex)
         for i in range(3, len(self.phfreqs)):
             g =  gammas[i] * self.phfreqs[i]
-            t += (self.oscillator_strength[i].real / (self.phfreqs[i]**2 - w**2 - 1j*g)).real
+            t += self.oscillator_strength[i].real / (self.phfreqs[i]**2 - w**2 - 1j*g)
 
         vol = self.structure.volume / bohr_to_angstrom ** 3
         t = 4 * np.pi * t / vol / eV_to_Ha**2
@@ -1801,24 +1869,26 @@ class DielectricTensorGenerator(Has_Structure):
         return DielectricTensor(t)
 
     @add_fig_kwargs
-    def plot(self, w_min=0, w_max=None, gamma_ev=1e-4, num=100, component='diag', units='eV',
+    def plot(self, w_min=0, w_max=None, gamma_ev=1e-4, num=500, component='diag', reim="reim", units='eV',
              with_phfreqs=True, ax=None, fontsize=12, **kwargs):
         """
         Plots the selected components of the dielectric tensor as a function of frequency.
 
         Args:
             w_min: minimum frequency in units `units`.
-            w_max: maximum frequency. If None it will be set to the value of the maximum frequency * 4.
+            w_max: maximum frequency. If None it will be set to the value of the maximum frequency + 5*gamma_ev.
             gamma_ev: Phonon damping factor in eV (full width). Poles are shifted by phfreq * gamma_ev.
                 Accept scalar or [nfreq] array.
             num: number of values of the frequencies between w_min and w_max.
             component: determine which components of the tensor will be displayed. Can be a list/tuple of two
                 elements, indicating the indices [i, j] of the desired component or a string among:
 
-                * 'diag' to plot the elements on diagonal
-                * 'all' to plot all the components
                 * 'diag_av' to plot the average of the components on the diagonal
+                * 'diag' to plot the elements on diagonal
+                * 'all' to plot all the components in the upper triangle.
+                * 'offdiag' to plot the off-diagonal components in the upper triangle.
 
+            reim: a string with "re" will plot the real part, with "im" selects the imaginary part.
             units: string specifying the units used for phonon frequencies. Possible values in
                 ("eV", "meV", "Ha", "cm-1", "Thz"). Case-insensitive.
             with_phfreqs: True to show phonon frequencies with dots.
@@ -1828,12 +1898,12 @@ class DielectricTensorGenerator(Has_Structure):
         Return: |matplotlib-Figure|
         """
         if w_max is None:
-            w_max = np.max(self.phfreqs) * 4 * phfactor_ev2units(units)
+            w_max = np.max(self.phfreqs) * phfactor_ev2units(units) + gamma_ev * 10
 
-        w_range = np.linspace(w_min, w_max, num, endpoint=True)
+        wmesh = np.linspace(w_min, w_max, num, endpoint=True)
+        t = np.zeros((num, 3, 3), dtype=complex)
 
-        t = np.zeros((num, 3, 3))
-        for i, w in enumerate(w_range):
+        for i, w in enumerate(wmesh):
             t[i] = self.tensor_at_frequency(w, units=units, gamma_ev=gamma_ev)
 
         ax, fig, plt = get_ax_fig_plt(ax=ax)
@@ -1842,27 +1912,37 @@ class DielectricTensorGenerator(Has_Structure):
             kwargs['linewidth'] = 2
 
         ax.set_xlabel('Frequency {}'.format(phunit_tag(units)))
-        ax.set_ylabel(r'$\varepsilon_{1}(\omega)$')
+        ax.set_ylabel(r'$\epsilon(\omega)$')
         ax.grid(True)
 
-        if isinstance(component, (list, tuple)):
-            ax.plot(w_range, t[:,component[0], component[1]], label='[{},{}]'.format(*component), **kwargs)
-        elif component == 'diag':
-            for i in range(3):
-                ax.plot(w_range, t[:, i, i], label='[{},{}]'.format(i,i), **kwargs)
-        elif component == 'all':
-            for i in range(3):
-                for j in range(3):
-                    ax.plot(w_range, t[:, i, j], label='[{},{}]'.format(i, j), **kwargs)
-        elif component == 'diag_av':
-            for i in range(3):
-                ax.plot(w_range, np.trace(t, axis1=1, axis2=2)/3, label='[{},{}]'.format(i, i), **kwargs)
-        else:
-            raise ValueError('Unkwnown component {}'.format(component))
+        reimfs = []
+        if 're' in reim: reimfs.append((np.real, "Re{%s}"))
+        if 'im' in reim: reimfs.append((np.imag, "Im{%s}"))
+
+        for reimf, reims in reimfs:
+            if isinstance(component, (list, tuple)):
+                label = reims % r'$\epsilon_{%d%d}$' % tuple(component)
+                ax.plot(wmesh, reimf(t[:,component[0], component[1]]), label=label, **kwargs)
+            elif component == 'diag':
+                for i in range(3):
+                    label = reims % r'$\epsilon_{%d%d}$' % (i, i)
+                    ax.plot(wmesh, reimf(t[:, i, i]), label=label, **kwargs)
+            elif component in ('all', "offdiag"):
+                for i in range(3):
+                    for j in range(3):
+                        if component == "all" and i > j: continue
+                        if component == "offdiag" and i >= j: continue
+                        label = reims % r'$\epsilon_{%d%d}$' % (i, j)
+                        ax.plot(wmesh, reimf(t[:, i, j]), label=label, **kwargs)
+            elif component == 'diag_av':
+                label = r'$Average\, %s\epsilon_{ii}$' % reims
+                ax.plot(wmesh, np.trace(reimf(t), axis1=1, axis2=2)/3, label=label, **kwargs)
+            else:
+                raise ValueError('Unkwnown component {}'.format(component))
 
         # Add points showing phonon energies.
         if with_phfreqs:
-            wvals = self.phfreqs * phfactor_ev2units(units)
+            wvals = self.phfreqs[3:] * phfactor_ev2units(units)
             ax.scatter(wvals, np.zeros_like(wvals), s=30, marker="o", c="blue")
 
         ax.legend(loc="best", fontsize=fontsize, shadow=True)
@@ -1871,6 +1951,26 @@ class DielectricTensorGenerator(Has_Structure):
 
     # To maintain backward compatibility.
     plot_vs_w = plot
+
+    @add_fig_kwargs
+    def plot_all(self, **kwargs):
+        """
+        Plot diagonal and off-diagonal elements of the dielectric tensor as a function of frequency.
+        Both real and imag part are show. Accepts all arguments of `plot` method with the exception of:
+        `component` and `reim`.
+
+        Returns: |matplotlib-Figure|
+        """
+        axmat, fig, plt = get_axarray_fig_plt(None, nrows=2, ncols=2,
+                                              sharex=True, sharey=False, squeeze=False)
+        fontsize = kwargs.pop("fontsize", 8)
+        for irow in range(2):
+            component = {0: "diag", 1: "offdiag"}[irow]
+            for icol in range(2):
+                reim = {0: "re", 1: "im"}[icol]
+                self.plot(component=component, reim=reim, ax=axmat[irow, icol], fontsize=fontsize, show=False, **kwargs)
+
+        return fig
 
 
 class DdbRobot(Robot):
@@ -2213,12 +2313,10 @@ class DdbRobot(Robot):
 
             # Add path to the DDB file.
             if with_path: df["ddb_path"] = ddb.filepath
-
             df_list.append(df)
 
         # Concatenate dataframes.
-        return dict2namedtuple(df=pd.concat(df_list, ignore_index=True),
-                               epsinf_list=epsinf_list)
+        return dict2namedtuple(df=pd.concat(df_list, ignore_index=True), epsinf_list=epsinf_list)
 
     def anacompare_eps0(self, ddb_header_keys=None, asr=2, chneut=1, tol=1e-3, with_path=False, verbose=0):
         """

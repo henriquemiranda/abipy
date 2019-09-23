@@ -82,7 +82,7 @@ Usage example:
 `FILE` is any file supported by abipy/pymatgen e.g Netcdf files, Abinit input, POSCAR, xsf ...
 Use `-v` to increase verbosity level (can be supplied multiple times e.g -vv).
 
-File extensions supported:
+File extensions supported (including zipped files with extension in ".bz2", ".gz", ".z"):
 """
     return s + abilab.abiopen_ext2class_table()
 
@@ -120,6 +120,8 @@ def get_parser(with_epilog=False):
         help=("Set matplotlib interactive backend. "
               "Possible values: GTKAgg, GTK3Agg, GTK, GTKCairo, GTK3Cairo, WXAgg, WX, TkAgg, Qt4Agg, Qt5Agg, macosx."
               "See also: https://matplotlib.org/faq/usage_faq.html#what-is-a-backend."))
+    parser.add_argument('--pylustrator', action='store_true', default=False,
+        help="Style matplotlib plots with pylustrator. See https://pylustrator.readthedocs.io/en/latest/")
 
     return parser
 
@@ -163,6 +165,11 @@ def main():
         sns.set(context=options.seaborn, style='darkgrid', palette='deep',
                 font='sans-serif', font_scale=1, color_codes=False, rc=None)
 
+    if options.pylustrator:
+        # Start pylustrator to style matplotlib plots 
+        import pylustrator
+        pylustrator.start()
+
     if not os.path.exists(options.filepath):
         raise RuntimeError("%s: no such file" % options.filepath)
 
@@ -192,7 +199,6 @@ def main():
                 print(abifile)
 
             if hasattr(abifile, "expose"):
-
                 abifile.expose(slide_mode=options.slide_mode, slide_timeout=options.slide_timeout,
                                verbose=options.verbose)
             else:

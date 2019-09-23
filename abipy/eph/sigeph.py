@@ -17,7 +17,8 @@ import numpy as np
 import pandas as pd
 import abipy.core.abinit_units as abu
 
-from collections import OrderedDict, namedtuple, Iterable
+from collections import OrderedDict, namedtuple
+from collections.abc import Iterable
 from tabulate import tabulate
 from monty.string import marquee, list_strings
 from monty.functools import lazy_property
@@ -252,6 +253,7 @@ class QpTempState(namedtuple("QpTempState", "spin kpoint band tmesh e0 qpe ze0 f
 
         #fig.tight_layout()
         return fig
+
 
 class QpTempList(list):
     """
@@ -650,7 +652,7 @@ class EphSelfEnergy(object):
         x0 = self.qp.qpe[itemp].real - self.qp.e0
         y0 = sig0.real + aa * x0
         scatter_opts = dict(color="blue", marker="o", alpha=1.0, s=50, zorder=100, edgecolor='black')
-        ax0.scatter(x0, y0, **scatter_opts, label="Linearized solution")
+        ax0.scatter(x0, y0, label="Linearized solution", **scatter_opts)
         text = r"$Z = %.2f$" % ze0
         #ax0.annotate(text, (x0 + 0.2, y0), textcoords='data', size=8)
         ax0.annotate(text, (0.02, sig0.real - 0.02), textcoords='data', size=8)
@@ -709,7 +711,7 @@ class A2feph(object):
         self.spin, self.kpoint, self.band = spin, kpoint, band
 
     @add_fig_kwargs
-    def plot(self, ax=None, units="meV", what="fandw", exchange_xy=False, fontsize=12, **kwargs):
+    def plot(self, ax=None, units="meV", what="fandw", exchange_xy=False, with_ahc_zpr=False, fontsize=12, **kwargs):
         """
         Plot the Eliashberg function.
 
@@ -718,6 +720,7 @@ class A2feph(object):
             units: Units for phonon plots. Possible values in ("eV", "meV", "Ha", "cm-1", "Thz"). Case-insensitive.
 	    what=: fandw for FAN, DW. gkq2 for |gkq|^2
             exchange_xy: True to exchange x-y axis.
+            with_ahc_zpr:
             fontsize: legend and title fontsize.
         """
         # Read mesh in Ha and convert to units.
@@ -735,7 +738,18 @@ class A2feph(object):
             ax.plot(xs, ys, label=self.latex_symbol["fan"], **kwargs)
             xs, ys = get_xy(wmesh, self.dw)
             ax.plot(xs, ys, label=self.latex_symbol["dw"], **kwargs)
-            xs, ys = get_xy(wmesh, self.fan + self.dw)
+            sig_tot = self.fan + self.dw
+            xs, ys = get_xy(wmesh, sig_tot)
+            ax.plot(xs, ys, label=self.latex_symbol["tot"], **kwargs)
+            if with_ahc_zpr:
+                from scipy.integrate import cumtrapz
+                integral = cumtrapz(sig_tot, x=self.wmesh, initial=True) #/ 2.0
+                print("ZPR: ", integral[-1])
+                xs, ys = get_xy(wmesh, integral)
+                ax2 = ax.twinx()
+                ax2.plot(xs, ys, label=r"$ZPR(\omega)$", **kwargs)
+                #ax2.set_ylabel('Y2 data', color='b')
+
             ax.plot(xs, ys, label=self.latex_symbol["tot"], **kwargs)
             xlabel, ylabel = abu.wlabel_from_units(units), self.latex_symbol["a2f"]
             set_ax_xylabels(ax, xlabel, ylabel, exchange_xy)
@@ -854,12 +868,19 @@ class SigEPhFile(AbinitNcFile, Has_Structure, Has_ElectronBands, NotebookWriter)
         else:
             app("Calculation type: Real + Imaginary part of SigmaEPh")
         app("Number of k-points computed: %d" % (self.nkcalc))
+        # These variables have added recently
+        sigma_ngkpt = self.reader.read_value("sigma_ngkpt", default=None)
+        sigma_erange = self.reader.read_value("sigma_erange", default=None)
+        #dvdb_add_lr = self.reader.read_value("dvdb_add_lr", default=None)
+        app("sigma_ngkpt: %s, sigma_erange: %s" % (sigma_ngkpt, sigma_erange))
         app("Max bstart: %d, min bstop: %d" % (self.reader.max_bstart, self.reader.min_bstop))
-        app("Q-mesh: nqibz: %s, nqbz: %s, ngqpt: %s" % (self.nqibz, self.nqbz, str(self.ngqpt)))
+        app("Ab-initio q-mesh: nqibz: %s, nqbz: %s, ngqpt: %s" % (self.nqibz, self.nqbz, str(self.ngqpt)))
+        eph_ngqpt_fine = self.reader.read_value("eph_ngqpt_fine")
+        app("q-mesh for self-energy integration (eph_ngqpt_fine): %s" % (str(eph_ngqpt_fine)))
         app("K-mesh for electrons:")
         app(self.ebands.kpoints.ksampling.to_string(verbose=verbose))
         app("Number of bands included in self-energy: %d" % (self.nbsum))
-        app("zcut: %.3f [Ha], %.3f (eV)" % (self.zcut, self.zcut * abu.Ha_eV))
+        app("zcut: %.5f [Ha], %.3f (eV)" % (self.zcut, self.zcut * abu.Ha_eV))
         app("Number of temperatures: %d, from %.1f to %.1f (K)" % (self.ntemp, self.tmesh[0], self.tmesh[-1]))
         app("symsigma: %s" % (self.symsigma))
         app("Has Eliashberg function: %s" % (self.has_eliashberg_function))
@@ -937,6 +958,7 @@ class SigEPhFile(AbinitNcFile, Has_Structure, Has_ElectronBands, NotebookWriter)
         Return a mapping of the kpoints at which the self energy was calculated and the ibz
         i.e. the list of k-points in the band structure used to construct the self-energy.
         """
+        # TODO: This field is not available in the netcdf file.
         if (len(self.sigma_kpoints) == len(self.ebands.kpoints) and
             all(k1 == k2 for (k1, k2) in zip(self.sigma_kpoints, self.ebands.kpoints))):
             return np.arange(len(self.sigma_kpoints))
@@ -947,6 +969,7 @@ class SigEPhFile(AbinitNcFile, Has_Structure, Has_ElectronBands, NotebookWriter)
         for ikc, sigkpt in enumerate(self.sigma_kpoints):
             kcalc2ibz[ikc] = self.ebands.kpoints.index(sigkpt)
 
+        #assert np.all(kcalc2ibz == self.reader.read_value("kcalc2ibz")[0] - 1)
         return kcalc2ibz
 
     @lazy_property
@@ -983,7 +1006,9 @@ class SigEPhFile(AbinitNcFile, Has_Structure, Has_ElectronBands, NotebookWriter)
     def edos(self):
         """
         |ElectronDos| object computed by Abinit with the input WFK file without doping (if any).
+        Since this field is optional, None is returned if netcdf variable is not present
         """
+        if "edos_mesh" not in self.reader.rootgrp.variables: return None
         # See m_ebands.edos_ncwrite for fileformat
         mesh = self.reader.read_value("edos_mesh") * abu.Ha_eV
         # nctkarr_t("edos_dos", "dp", "edos_nw, nsppol_plus1"), &
@@ -993,6 +1018,10 @@ class SigEPhFile(AbinitNcFile, Has_Structure, Has_ElectronBands, NotebookWriter)
         fermie = self.ebands.fermie
 
         return ElectronDos(mesh, spin_dos[1:], nelect, fermie=fermie)
+
+    def get_bolztrap(self, **kwargs):
+        from abipy.boltztrap import AbipyBoltztrap
+        return AbipyBoltztrap.from_sigeph(self, **kwargs)
 
     def sigkpt2index(self, kpoint):
         """
@@ -1247,13 +1276,11 @@ class SigEPhFile(AbinitNcFile, Has_Structure, Has_ElectronBands, NotebookWriter)
             basename: The basename of the files to be produced
             workdir: Directory where files will be produced. None for current working directory.
         """
+        #TODO move this to AbipyBoltztrap class
         workdir = os.getcwd() if workdir is None else str(workdir)
 
         # get the lifetimes as an array
         qpes = self.get_qp_array(mode='ks+lifetimes')
-
-        eV_Ry = 2 * abu.eV_Ha
-        eV_s = abu.eV_to_THz*1e12 * 2*np.pi
 
         # read from this class
         nspn    = self.nspden
@@ -1263,7 +1290,7 @@ class SigEPhFile(AbinitNcFile, Has_Structure, Has_ElectronBands, NotebookWriter)
         bstop   = self.reader.min_bstop
         ntemp   = self.ntemp
         tmesh   = self.tmesh
-        fermie  = self.ebands.fermie * eV_Ry
+        fermie  = self.ebands.fermie * abu.eV_Ry
         struct  = self.ebands.structure
 
         def write_file(filename, tag, function, T=None):
@@ -1284,148 +1311,25 @@ class SigEPhFile(AbinitNcFile, Has_Structure, Has_ElectronBands, NotebookWriter)
         for itemp in range(ntemp):
             T = tmesh[itemp]
             filename_tau = basename + '_%dK_BLZTRP.tau_k' % T
-            function = lambda x: 1.0/(2*abs(x.imag)*eV_s)
+            function = lambda x: 1.0/(2*abs(x.imag)*abu.eV_s)
             write_file(filename_tau, 'tau_k', function,T)
 
         # write energies
         filename_ene = basename + '_BLZTRP.energy'
-        function = lambda x: x.real * eV_Ry
+        function = lambda x: x.real * abu.eV_Ry
         write_file(filename_ene, 'eigen-enegies', function)
 
         # write structure
         fmt3 = "%20.12e "*3 + '\n'
-        with open(os.path.join(workdir, basename + '_BLZTRP.structure'), 'wt') as f:
-            f.write('BoltzTraP geometry file generated by AbiPy.\n')
-            f.write(fmt3 % tuple(struct.lattice.matrix[0]))
-            f.write(fmt3 % tuple(struct.lattice.matrix[1]))
-            f.write(fmt3 % tuple(struct.lattice.matrix[2]))
-            f.write("%d\n" % len(struct))
+        path = os.path.join(workdir, basename + '_BLZTRP.structure')
+        with open(path, 'wt') as f:
+            f.write('BoltzTraP geometry file generated by abipy.\n')
+            f.write(fmt3 % tuple(struct.lattice.matrix[0]*abu.Ang_Bohr))
+            f.write(fmt3 % tuple(struct.lattice.matrix[1]*abu.Ang_Bohr))
+            f.write(fmt3 % tuple(struct.lattice.matrix[2]*abu.Ang_Bohr))
+            f.write("%d\n"%len(struct))
             for atom in struct:
-                f.write("%s " % atom.specie + fmt3 % tuple(atom.coords))
-
-    def call_boltztrap2(self,lpratio=100,dos_method="gaussian:0.01 eV",npts=1000,
-                        itemp_list=None,filter_params=None,bstart=None,bstop=None,
-                        nworkers=1,verbose=0):
-        """
-        If Boltztrap2 is installed use it to compute transport related quantities
-        """
-        import BoltzTraP2.bandlib as BL
-
-        eV_Ry = 2 * abu.eV_Ha
-        eV_s = abu.eV_to_THz*1e12 * 2*np.pi
-
-        #get the lifetimes as an array
-        qpes = self.get_qp_array(mode='ks+lifetimes')
-        if bstart is None: bstart = self.reader.max_bstart
-        if bstop  is None: bstop  = self.reader.min_bstop
-
-        from time import time
-        from BoltzTraP2 import sphere
-        from BoltzTraP2 import fite
-        from BoltzTraP2 import units as btp_units
-        import matplotlib.pyplot as plt
-
-        # Obtain each piece of information from the corresponding function.
-        fermie = self.ebands.fermie*eV_Ry
-        atoms = self.ebands.structure.to_ase_atoms()
-        volume = self.ebands.structure.volume
-        nelect = 6
-        kpoints = [k.frac_coords for k in self.sigma_kpoints]
-        #TODO handle spin
-        eig = qpes[0,:,bstart:bstop,0].T*eV_Ry
-
-        #prepare band interpolation
-        print('bands,nkpoints:',eig.shape)
-        data = AbipyBoltztrap(fermie, atoms, nelect, kpoints, eig)
-        lattvec = data.get_lattvec()
-        equivalences = sphere.get_equivalences(data.atoms, lpratio)
-        start_time = time()
-        coeffs = fite.fitde3D(data, equivalences, nworkers=nworkers)
-        nequiv = len(equivalences)
-        print(nequiv)
-        max1, max2, max3 = 0,0,0
-        for equiv in equivalences:
-            max1 = max(np.max(equiv[:,0]),max1)
-            max2 = max(np.max(equiv[:,1]),max2)
-            max3 = max(np.max(equiv[:,2]),max3)
-        print(2*max1+1,2*max2+1,2*max3+1)
-        if verbose: print('fitde3D took %lfs'%(time()-start_time))
-
-        #interpolate electron bands
-        start_time = time()
-        eig_fine, vvband, cband = fite.getBTPbands(equivalences, coeffs, lattvec, curvature=False, nworkers=nworkers)
-        if verbose: print('getBTPbands took %lfs'%(time()-start_time))
-        print('bands,nkpoints:',eig_fine.shape)
-        itemp_list = list(range(self.ntemp)) if itemp_list is None else duck.list_ints(itemp_list)
-        for itemp in itemp_list:
-
-            #TODO handle spin
-            linewidth = qpes[0, :, bstart:bstop, itemp].imag.T*eV_Ry
-
-            #prepare lifetimes interpolation
-            data = AbipyBoltztrap(fermie, atoms, nelect, kpoints, linewidth)
-            start_time = time()
-            coeffs = fite.fitde3D(data, equivalences)
-            if verbose: print('fitde3D took %lfs'%(time()-start_time))
-
-            #interpolate lifetimes
-            start_time = time()
-            linewidth_fine, _, cband = fite.getBTPbands(equivalences, coeffs, lattvec, curvature=False)
-            if verbose: print('getBTPbands took %lfs'%(time()-start_time))
-            tau_fine = 1.0/np.abs(2*linewidth_fine*eV_s)
-
-            #get DOS
-            erange = (fermie-0.1,fermie+0.1)
-            start_time = time()
-            wmesh, dos, vvdos_tau, _ = BL.BTPDOS(eig_fine, vvband, erange=erange, npts=npts,
-                                                 scattering_model=tau_fine, mode=dos_method)
-            if verbose: print('BTPDOS took %lfs'%(time()-start_time))
-            start_time = time()
-            wmesh, dos, vvdos, _ = BL.BTPDOS(eig_fine, vvband, erange=erange, npts=npts, mode=dos_method)
-            if verbose: print('BTPDOS took %lfs'%(time()-start_time))
-
-            if 1:
-                fig = plt.figure()
-                ax1 = fig.add_subplot(1,1,1)
-                ax1.set_title('%dK'%self.tmesh[itemp])
-                ax1.plot(wmesh-fermie,dos,label='dos')
-                ax1.plot(wmesh-fermie,vvdos[0,0],label='velocities')
-                ax1.legend()
-                ax2 = ax1.twinx()
-                ax2.plot(wmesh-fermie,vvdos_tau[0,0],label='velocities tau',c='C2')
-                ax2.axvline(0)
-                ax2.legend()
-
-            #plots
-            Tr = np.linspace(100., 600., num=10)
-            margin = 10. * btp_units.BOLTZMANN * Tr.max()
-            mur_indices = np.logical_and(wmesh > wmesh.min() + margin,
-                                         wmesh < wmesh.max() - margin)
-            mur = wmesh[mur_indices]
-
-            N, L0, L1, L2, Lm11 = BL.fermiintegrals(wmesh, dos, vvdos_tau, mur=mur, Tr=Tr)
-            sigma, seebeck, kappa, Hall = BL.calc_Onsager_coefficients(L0, L1, L2, mur, Tr, volume)
-
-            fig = plt.figure()
-            # MG: This plt stuff is here because you are still developing right? ;)
-            plt.plot(mur-fermie, sigma[0, :, 0, 0], label="conductivity")
-            plt.axvline(0)
-            plt.legend()
-
-            fig = plt.figure()
-            plt.plot(mur-fermie, seebeck[0, :, 0, 0], label="seebeck")
-            plt.axvline(0)
-            plt.legend()
-
-            fig = plt.figure()
-            s = seebeck[0, :, 0, 0]
-            c = sigma[0, :, 0, 0]
-            plt.plot(mur-fermie, s**2*c, label="power factor")
-            plt.axvline(0)
-            plt.legend()
-
-            plt.show()
-            exit()
+                f.write("%s "% atom.specie + fmt3 % tuple(atom.coords*abu.Ang_Bohr))
 
     def interpolate(self, itemp_list=None, lpratio=5, mode="qp", ks_ebands_kpath=None, ks_ebands_kmesh=None,
                     ks_degatol=1e-4, vertices_names=None, line_density=20, filter_params=None,
@@ -1809,13 +1713,72 @@ class SigEPhFile(AbinitNcFile, Has_Structure, Has_ElectronBands, NotebookWriter)
 
         Returns: |matplotlib-Figure|
         """
-        # This is a bit slow if several k-points but data is scatted due to symsigma.
+        # This is a bit slow if several k-points but data is scattered due to symsigma.
         ax, fig, plt = get_ax_fig_plt(ax=ax)
         if "markersize" not in kwargs: kwargs["markersize"] = 2
         return self.plot_qps_vs_e0(itemp_list=itemp_list, with_fields="fan0", reim="imag",
                                    function=abs, e0=e0, colormap=colormap, xlims=xlims, ylims=ylims,
                                    exchange_xy=exchange_xy, ax_list=[ax], fontsize=fontsize, show=False,
                                    **kwargs)
+
+    @add_fig_kwargs
+    def plot_tau_vtau(self, itemp=0, ax_list=None, **kwargs):
+
+        r = self.reader
+        # Diagonal elements of velocity operator in cartesian coordinates for all states in Sigma_nk.
+        # nctkarr_t("vcar_calc", "dp", "three, max_nbcalc, nkcalc, nsppol")]))
+        # nctkarr_t("ks_enes", "dp", "max_nbcalc, nkcalc, nsppol")
+        # nctkarr_t("vals_e0ks", "dp", "two, ntemp, max_nbcalc, nkcalc, nsppol")
+        v_var = r.read_variable("vcar_calc")
+        ks_enes_var = r.read_variable("ks_enes")
+        vals_e0ks_var = r.read_variable("vals_e0ks")
+
+        ks_enes, taus, vels = [], [], [] 
+        for spin in range(self.nsppol):
+            for ikc, kpoint in enumerate(self.sigma_kpoints):
+                nb = r.nbcalc_sk[spin, ikc]
+                ks_enes.extend(ks_enes_var[spin, ikc, :nb] * abu.Ha_eV)
+                # TODO: times conversion fact!
+                asimag = np.abs(vals_e0ks_var[spin, ikc, :nb, itemp, 1]) 
+                asimag = np.where(asimag > 1e-8, asimag, 1e-8) 
+                print(asimag)
+                taus.extend(1.0 / (2.0 * asimag))  
+                vels.extend(np.linalg.norm(v_var[spin, ikc, :nb, :], axis=-1))
+
+        ks_enes = np.reshape(np.array(ks_enes), (self.nsppol, -1))
+        taus = np.reshape(np.array(taus), (self.nsppol, -1))
+        vels = np.reshape(np.array(vels), (self.nsppol, -1))
+        #ks_enes, taus, vels = [np.reshape(a, (self.nsppol, -1)) for a in map(np.array, (ks_enes, taus, vels))]
+
+        #v = np.linalg.norm(v, axis=-1)
+        #nctkarr_t("vals_e0ks", "dp", "two, ntemp, max_nbcalc, nkcalc, nsppol"), &
+        #tau_var = r.read_variable("vals_e0ks")[..., itemp, 1]
+        #tau = 1.0 / (2.0 * np.abs(tau)) # TODO: times conversion fact!
+        #ks_enes = r.read_value("ks_enes") * abu.Ha_eV
+
+        nrows, ncols = 3, 1
+        axmat, fig, plt = get_axarray_fig_plt(ax_list, nrows=nrows, ncols=ncols,
+                                              sharex=True, sharey=False, squeeze=True)
+
+        data = {
+             0: dict(vals=taus, ylabel="Tau"),
+             1: dict(vals=vels, ylabel="Group velocity"),
+             2: dict(vals=vels * taus, ylabel="Tau V"),
+        }
+
+        for ix, ax in enumerate(axmat):
+            d = data[ix]
+            for spin in range(self.nsppol):
+                xs, ys = ks_enes[spin].ravel(), d["vals"][spin].ravel()
+                ax.scatter(xs, ys)
+                if ix == len(axmat) - 1:
+                    ax.set_xlabel("Energy (eV)")
+                if spin == 0:
+                    ax.set_ylabel(d["ylabel"])
+            ax.grid(True)
+            #ax.legend(loc="best", fontsize=fontsize, shadow=True)
+
+        return fig
 
     @add_fig_kwargs
     def plot_a2fw_skb(self, spin, kpoint, band, what="auto", ax=None, fontsize=12, units="meV", **kwargs):
@@ -1978,6 +1941,7 @@ class SigEPhFile(AbinitNcFile, Has_Structure, Has_ElectronBands, NotebookWriter)
         verbose = kwargs.pop("verbose", 0)
         if self.imag_only:
             yield self.plot_qps_vs_e0(with_fields="fan0", reim="imag", function=abs, show=False)
+            yield self.plot_tau_vtau(show=False)
 
         else:
             yield self.plot_qpbands_ibzt(show=False)
@@ -1989,7 +1953,8 @@ class SigEPhFile(AbinitNcFile, Has_Structure, Has_ElectronBands, NotebookWriter)
                 yield self.plot_qpgaps_t(qp_kpoints=qp_kpt, show=False)
             yield self.plot_qps_vs_e0(show=False)
 
-        yield self.edos.plot(show=False)
+        if self.edos is not None:
+            yield self.edos.plot(show=False)
 
     def write_notebook(self, nbpath=None, title=None):
         """
@@ -2616,7 +2581,7 @@ class TdepElectronBands(object): # pragma: no cover
             return filepath
 
     @add_fig_kwargs
-    def plot_itemp_with_lws_vs_e0(self, itemp, ax_list=None, width_ratios=(2,1),
+    def plot_itemp_with_lws_vs_e0(self, itemp, ax_list=None, width_ratios=(2, 1),
                                   function=lambda x: x, fact=10.0, **kwargs):
         """
         Plot bandstructure with linewidth at temperature ``itemp`` and linewidth vs the KS energies.
@@ -2644,17 +2609,18 @@ class TdepElectronBands(object): # pragma: no cover
             fig = plt.gcf()
 
         # plot the band structure
-        self.plot_itemp(itemp,ax=ax0,fact=fact,show=False)
+        self.plot_itemp(itemp, ax=ax0, fact=fact, show=False)
 
         # plot the dos
         dos_markersize = kwargs.pop("markersize", 4)
         self.plot_lws_vs_e0(itemp_list=[itemp],ax=ax1,
-                            exchange_xy=True,function=abs,
-                            markersize=dos_markersize,show=False)
+                            exchange_xy=True, function=abs,
+                            markersize=dos_markersize, show=False)
 
         ax1.grid(True)
         ax1.yaxis.set_ticks_position("right")
         ax1.yaxis.set_label_position("right")
+
         return fig
 
     @add_fig_kwargs
